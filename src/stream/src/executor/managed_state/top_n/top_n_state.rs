@@ -194,91 +194,42 @@ impl<S: StateStore, const TOP_N_TYPE: usize> ManagedTopNState<S, TOP_N_TYPE> {
             &mut self.ordered_row_deserializer,
             &mut self.cell_based_row_deserializer,
         );
-        match TOP_N_TYPE {
-            TOP_N_MIN => {
-                let mut flush_buffer_iter = self.flush_buffer.iter().peekable();
-                while let Some((key_from_storage, row_from_storage)) =
-                    pk_and_row_iter.next().await?
-                {
-                    // If we inserted enough values, break as we will only retain `top_n_count`
-                    // elements in the cache.
-                    if let Some(top_n_count) = self.top_n_count && self.top_n.len() >= top_n_count {
-                        break;
-                    }
-                    let mut encounter_same_key = false;
-                    while let Some((key_from_buffer, value_from_buffer)) = flush_buffer_iter.peek()
-                    {
-                        match key_from_buffer.cmp(&&key_from_storage) {
-                            Ordering::Greater => {
-                                // We need to break to determine whether the next `key_from_storage`
-                                // will be shadowed by `key_from_buffer` in the next for loop.
-                                break;
-                            }
-                            Ordering::Equal => {
-                                // The `key_from_storage` is shadowed by `key_from_buffer`.
-                                // We do not want to add `key_from_storage` into the result set
-                                // after the while loop.
-                                encounter_same_key = true;
-                            }
-                            _ => {
-                                // do nothing
-                            }
-                        }
-                        match value_from_buffer {
-                            FlushStatus::Insert(row) | FlushStatus::DeleteInsert(row) => {
-                                self.top_n.insert((*key_from_buffer).clone(), row.clone());
-                            }
-                            FlushStatus::Delete => {
-                                // do nothing
-                            }
-                        }
-                        flush_buffer_iter.next();
-                    }
-                    if !encounter_same_key {
-                        self.top_n.insert(key_from_storage, row_from_storage);
-                    }
-                }
-            }
-            TOP_N_MAX => {
-                let mut flush_buffer_iter = self.flush_buffer.iter().rev().peekable();
-                while let Some((key_from_storage, row_from_storage)) =
-                    pk_and_row_iter.next().await?
-                {
-                    if let Some(top_n_count) = self.top_n_count && self.top_n.len() >= top_n_count {
-                        break;
-                    }
-                    let mut encounter_same_key = false;
-                    // This is similar to `TOP_N_MIN` branch above. May refer to its comments for
-                    // the code below.
-                    while let Some((key_from_buffer, value_from_buffer)) = flush_buffer_iter.peek()
-                    {
-                        match key_from_buffer.cmp(&&key_from_storage) {
-                            Ordering::Less => {
-                                break;
-                            }
-                            Ordering::Equal => {
-                                encounter_same_key = true;
-                            }
-                            _ => {
-                                // do nothing
-                            }
-                        }
-                        match value_from_buffer {
-                            FlushStatus::Insert(row) | FlushStatus::DeleteInsert(row) => {
-                                self.top_n.insert((*key_from_buffer).clone(), row.clone());
-                            }
-                            FlushStatus::Delete => {
-                                // do nothing
-                            }
-                        }
-                        flush_buffer_iter.next();
-                    }
-                    if !encounter_same_key {
-                        self.top_n.insert(key_from_storage, row_from_storage);
-                    }
-                }
-            }
+
+        let order_to_break = match TOP_N_TYPE {
+            TOP_N_MIN => Ordering::Greater,
+            TOP_N_MAX => Ordering::Less,
             _ => unreachable!(),
+        };
+
+        let mut flush_buffer_iter = self.flush_buffer.iter().peekable();
+        while let Some((key_from_storage, row_from_storage)) = pk_and_row_iter.next().await? {
+            // If we inserted enough values, break as we will only retain `top_n_count`
+            // elements in the cache.
+            if let Some(top_n_count) = self.top_n_count && self.top_n.len() >= top_n_count {
+                break;
+            }
+            let mut encounter_same_key = false;
+            while let Some((key_from_buffer, value_from_buffer)) = flush_buffer_iter.peek() {
+                let key_compare_order = key_from_buffer.cmp(&&key_from_storage);
+                if order_to_break == key_compare_order {
+                    break;
+                } else if key_compare_order == Ordering::Equal {
+                    encounter_same_key = true;
+                }
+
+                match value_from_buffer {
+                    FlushStatus::Insert(row) | FlushStatus::DeleteInsert(row) => {
+                        self.top_n.insert((*key_from_buffer).clone(), row.clone());
+                    }
+                    FlushStatus::Delete => {
+                        // do nothing
+                    }
+                }
+                flush_buffer_iter.next();
+            }
+            if !encounter_same_key {
+                self.top_n.insert(key_from_storage, row_from_storage);
+            }
         }
         Ok(())
     }
