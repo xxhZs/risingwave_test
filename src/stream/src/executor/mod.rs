@@ -345,7 +345,7 @@ impl Barrier {
                                 source_splits: match splits.clone() {
                                     Some(split) => split
                                         .into_iter()
-                                        .map(|s| s.to_json_bytes().to_vec())
+                                        .map(|s| s.encode_to_bytes().to_vec())
                                         .collect::<Vec<_>>(),
                                     None => vec![],
                                 },
