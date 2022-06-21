@@ -4067,6 +4067,7 @@ name = "risingwave_connector"
 version = "0.1.9"
 dependencies = [
  "anyhow",
+ "apache-avro",
  "async-stream",
  "async-trait",
  "aws-config",
@@ -4427,7 +4428,6 @@ name = "risingwave_source"
 version = "0.1.9"
 dependencies = [
  "anyhow",
- "apache-avro",
  "assert_matches",
  "async-stream",
  "async-trait",

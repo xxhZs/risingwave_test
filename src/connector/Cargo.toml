@@ -7,6 +7,7 @@ version = "0.1.9"
 anyhow = "1"
 async-stream = "0.3"
 async-trait = "0.1"
+apache-avro = { git = "https://github.com/singularity-data/avro", branch = "master", features = ["snappy", "zstandard", "bzip", "xz"] }
 aws-config = { version = "0.12", default-features = false, features = ["rt-tokio", "native-tls"] }
 aws-sdk-kinesis = { version = "0.12", default-features = false, features = ["rt-tokio", "native-tls"] }
 aws-sdk-s3 = { version = "0.12", default-features = false, features = ["rt-tokio","native-tls"] }

@@ -21,7 +21,7 @@ use serde_json::Value;
 
 use crate::SourceColumnDesc;
 
-macro_rules! make_ScalarImpl {
+macro_rules! make_scalar_impl {
     ($x:expr, $y:expr) => {
         match $x {
             Some(v) => return Ok($y(v)),
@@ -36,32 +36,32 @@ pub(crate) fn json_parse_value(
 ) -> Result<ScalarImpl> {
     match column.data_type {
         DataType::Boolean => {
-            make_ScalarImpl!(value.and_then(|v| v.as_bool()), |x| ScalarImpl::Bool(
+            make_scalar_impl!(value.and_then(|v| v.as_bool()), |x| ScalarImpl::Bool(
                 x as bool
             ))
         }
         DataType::Int16 => {
-            make_ScalarImpl!(value.and_then(|v| v.as_i64()), |x| ScalarImpl::Int16(
+            make_scalar_impl!(value.and_then(|v| v.as_i64()), |x| ScalarImpl::Int16(
                 x as i16
             ))
         }
         DataType::Int32 => {
-            make_ScalarImpl!(value.and_then(|v| v.as_i64()), |x| ScalarImpl::Int32(
+            make_scalar_impl!(value.and_then(|v| v.as_i64()), |x| ScalarImpl::Int32(
                 x as i32
             ))
         }
         DataType::Int64 => {
-            make_ScalarImpl!(value.and_then(|v| v.as_i64()), |x| ScalarImpl::Int64(
+            make_scalar_impl!(value.and_then(|v| v.as_i64()), |x| ScalarImpl::Int64(
                 x as i64
             ))
         }
         DataType::Float32 => {
-            make_ScalarImpl!(value.and_then(|v| v.as_f64()), |v| ScalarImpl::Float32(
+            make_scalar_impl!(value.and_then(|v| v.as_f64()), |v| ScalarImpl::Float32(
                 (v as f32).into()
             ))
         }
         DataType::Float64 => {
-            make_ScalarImpl!(
+            make_scalar_impl!(
                 value.and_then(|v| v.as_f64()),
                 |v: f64| ScalarImpl::Float64(v.into())
             )
@@ -76,7 +76,7 @@ pub(crate) fn json_parse_value(
             None => Err(RwError::from(InternalError("json parse error".to_string()))),
         },
         DataType::Varchar => {
-            make_ScalarImpl!(value.and_then(|v| v.as_str()), |v: &str| ScalarImpl::Utf8(
+            make_scalar_impl!(value.and_then(|v| v.as_str()), |v: &str| ScalarImpl::Utf8(
                 v.to_owned_scalar()
             ))
         }

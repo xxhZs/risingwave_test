@@ -44,7 +44,6 @@ pub use table_v2::*;
 
 use crate::connector_source::{ConnectorSource, ConnectorSourceReader};
 
-pub mod parser;
 
 mod manager;
 

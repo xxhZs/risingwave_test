@@ -51,6 +51,8 @@ pub mod dummy_connector;
 mod macros;
 pub mod sink;
 pub mod state;
+mod parser;
+
 
 pub use base::ConnectorState;
 pub use datagen::DATAGEN_CONNECTOR;

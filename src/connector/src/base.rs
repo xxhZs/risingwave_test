@@ -22,6 +22,7 @@ use itertools::Itertools;
 use prost::Message;
 use risingwave_pb::source::ConnectorSplit;
 use serde::{Deserialize, Serialize};
+use risingwave_pb::data::StreamChunk;
 
 use crate::datagen::{
     DatagenProperties, DatagenSplit, DatagenSplitEnumerator, DatagenSplitReader, DATAGEN_CONNECTOR,
@@ -40,6 +41,7 @@ use crate::nexmark::{NexmarkProperties, NexmarkSplit, NexmarkSplitEnumerator, NE
 use crate::pulsar::source::reader::PulsarSplitReader;
 use crate::pulsar::{PulsarProperties, PulsarSplit, PulsarSplitEnumerator, PULSAR_CONNECTOR};
 use crate::{impl_connector_properties, impl_split, impl_split_enumerator, impl_split_reader};
+use crate::parser::SourceParserImpl;
 
 /// [`SplitEnumerator`] fetches the split metadata from the external source service.
 /// NOTE: It runs in the meta server, so probably it should be moved to the `meta` crate.
@@ -52,6 +54,22 @@ pub trait SplitEnumerator: Sized {
     async fn list_splits(&mut self) -> Result<Vec<Self::Split>>;
 }
 
+pub struct SplitReaderContext<T> {
+    properties: T,
+    state: ConnectorState,
+    parser: Option<SourceParserImpl>,
+    columns: Option<Vec<Column>>,
+}
+
+/// [`StreamChunkWithState`] returns stream chunk together with offset for each split. In the
+/// current design, one connector source can have multiple split reader. The keys are unique
+/// `split_id` and values are the latest offset for each split.
+#[derive(Clone, Debug)]
+pub struct StreamChunkWithState {
+    pub chunk: StreamChunk,
+    pub split_offset_mapping: Option<HashMap<String, String>>,
+}
+
 /// [`SplitReader`] is an abstraction of the external connector read interface,
 /// used to read messages from the outside and transform them into source-oriented
 /// [`SourceMessage`], in order to improve throughput, it is recommended to return a batch of
@@ -62,11 +80,14 @@ pub trait SplitReader: Sized {
     type Properties;
 
     async fn new(
-        properties: Self::Properties,
-        state: ConnectorState,
-        columns: Option<Vec<Column>>,
+        context: SplitReaderContext<Self::Properties>,
     ) -> Result<Self>;
     async fn next(&mut self) -> Result<Option<Vec<SourceMessage>>>;
+
+    async fn next_chunk(&mut self) -> Result<StreamChunkWithState>{
+        let x = self.next().await?;
+
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, EnumAsInner, PartialEq, Hash)]
