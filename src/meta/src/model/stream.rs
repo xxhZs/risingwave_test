@@ -45,7 +45,7 @@ pub struct TableFragments {
     pub(crate) fragments: BTreeMap<FragmentId, Fragment>,
 
     /// The status of actors
-    actor_status: BTreeMap<ActorId, ActorStatus>,
+    pub(crate) actor_status: BTreeMap<ActorId, ActorStatus>,
 
     /// Internal TableIds from all Fragment
     internal_table_ids: Vec<u32>,
