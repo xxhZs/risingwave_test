@@ -657,12 +657,6 @@ impl<S> GlobalStreamManager<S>
         // dispatchers: &mut HashMap<(ActorId, DispatcherId), Vec<ActorId>>,
     ) {
         let stream_actor = actor_map.get(&actor_id).unwrap();
-        // for dispatcher in &stream_actor.dispatcher {
-        //     for downstream_actor_id in dispatcher.downstream_actor_id {
-        //         dispatchers.insert(((actor_id, dispatcher.dispatcher_id), dispatcher.downstream_actor_id.clone()))
-        //     }
-        // }
-
         for upstream_actor_id in &stream_actor.upstream_actor_id {
             upstream.entry(actor_id).or_insert(HashSet::new()).insert(*upstream_actor_id);
             downstream.entry(*upstream_actor_id).or_insert(HashSet::new()).insert(actor_id);
@@ -670,30 +664,7 @@ impl<S> GlobalStreamManager<S>
         }
     }
 
-    // async fn resolv_full_dependent_actors(
-    //     &self,
-    //     table_id: TableId,
-    //     actor_id: ActorId,
-    //     table_actor_map: &mut HashMap<TableId, HashMap<ActorId, StreamActor>>,
-    //     downstream: &mut HashMap<ActorId, HashSet<ActorId>>,
-    //     upstream: &mut HashMap<ActorId, HashSet<ActorId>>,
-    //     actor_table: &mut HashMap<ActorId, TableId>,
-    // ) -> Result<()>{
-    //     table_actor_map.entry(table_id).or_insert_with(|| {
-    //         let table_fragments = self.fragment_manager.select_table_fragments_by_table_id(&table_id).await;
-    //         todo!()
-    //     })
-    //
-    //     let stream_actor = actor_map.get(&actor_id).unwrap();
-    //     for upstream_actor_id in &stream_actor.upstream_actor_id {
-    //         upstream.entry(actor_id).or_insert(HashSet::new()).insert(*upstream_actor_id);
-    //         downstream.entry(*upstream_actor_id).or_insert(HashSet::new()).insert(actor_id);
-    //         Self::resolv_dependent_actors(*upstream_actor_id, actor_map, downstream, upstream);
-    //     }
-    // }
-
-
-    pub async fn migrate_actors_2(&self, table_id: &TableId, actors: HashMap<ActorId, WorkerId>) -> Result<()> {
+    pub async fn migrate_actors(&self, table_id: &TableId, actors: HashMap<ActorId, WorkerId>) -> Result<()> {
         let table_fragments = self
             .fragment_manager
             .select_table_fragments_by_table_id(table_id)
@@ -788,38 +759,6 @@ impl<S> GlobalStreamManager<S>
 
         println!("{:?}", upstream_node_actors);
 
-        //
-        // for (actor_id, downs) in up_id_to_down_info {
-        //     println!("actor id {}", actor_id);
-        //
-        //     for down in downs {
-        //         println!("\tdown {} {:?}", down.actor_id, down.host)
-        //     }
-        // }
-        //
-        // let root_upstreams = roots.into_iter().map(|root| {
-        //     if let Some(upstreams) = upstream_actor_map.get(&root) {}
-        // })
-
-
-        // let dispatches = dispatches
-        //     .iter()
-        //     .map(|(up_id, down_ids)| {
-        //         (
-        //             *up_id,
-        //             down_ids
-        //                 .iter()
-        //                 .map(|down_id| {
-        //                     actor_host_infos
-        //                         .get(down_id)
-        //                         .expect("downstream actor info not exist")
-        //                         .clone()
-        //                 })
-        //                 .collect_vec(),
-        //         )
-        //     })
-        //     .collect::<HashMap<_, _>>();
-        //
         // Hanging channels for each worker node.
         let mut node_hanging_channels = {
             // upstream_actor_id -> Vec<downstream_actor_info>
@@ -926,7 +865,6 @@ impl<S> GlobalStreamManager<S>
                     actor_id: actors,
                 })
                 .await?;
-
         }
 
         todo!()
@@ -1415,7 +1353,7 @@ mod tests {
 
         services
             .global_stream_manager
-            .migrate_actors_2(&table_id, actors)
+            .migrate_actors(&table_id, actors)
             .await
             .unwrap();
 
