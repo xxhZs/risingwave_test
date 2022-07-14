@@ -38,11 +38,36 @@ pub struct MySQLConfig {
 #[allow(dead_code)]
 pub struct MySQLSink {
     cfg: MySQLConfig,
+    conn: Conn,
+    tx: Option<Transaction<'static>>,
+
+    last_success_epoch: u64,
+    in_transaction_epoch: Option<u64>,
 }
 
 impl MySQLSink {
-    pub fn new(cfg: MySQLConfig) -> Result<Self> {
-        Ok(Self { cfg })
+    pub async fn new(cfg: MySQLConfig) -> Result<Self> {
+        // Build a connection and start transaction
+        let endpoint = cfg.endpoint.clone();
+        let mut endpoint = endpoint.split(':');
+        let mut builder = OptsBuilder::default()
+            .user(cfg.user.clone())
+            .pass(cfg.password.clone())
+            .ip_or_hostname(endpoint.next().unwrap())
+            .db_name(cfg.database.clone());
+        // TODO(nanderstabel): Fix ParseIntError
+        if let Some(port) = endpoint.next() {
+            builder = builder.tcp_port(port.parse().unwrap());
+        }
+        let conn = Conn::new(builder).await?;
+
+        Ok(Self {
+            cfg,
+            conn,
+            tx: None,
+            last_success_epoch: 0,
+            in_transaction_epoch: None,
+        })
     }
 
     fn endpoint(&self) -> String {
@@ -78,6 +103,7 @@ impl TryFrom<Datum> for MySQLValue {
     type Error = SinkError;
 
     fn try_from(datum: Datum) -> Result<MySQLValue> {
+        // note that mysql value do not support struct and array type
         if let Some(scalar) = datum {
             match scalar {
                 ScalarImpl::Int16(v) => Ok(MySQLValue(v.into())),
@@ -104,6 +130,10 @@ impl TryFrom<Datum> for MySQLValue {
 #[async_trait]
 impl Sink for MySQLSink {
     async fn write_batch(&mut self, chunk: StreamChunk, schema: &Schema) -> Result<()> {
+        if let Some(cur_epoch) = self.in_transaction_epoch && cur_epoch <= self.last_success_epoch {
+            return Ok(());
+        }
+
         // Closure that takes an idx to create a vector of MySQLValues from a StreamChunk 'row'.
         let values = |idx| -> Result<Vec<MySQLValue>> {
             chunk
@@ -126,21 +156,7 @@ impl Sink for MySQLSink {
                 .collect::<Vec<String>>()
         };
 
-        // Build a connection and start transaction
-        let endpoint = self.endpoint();
-        let mut endpoint = endpoint.split(':');
-        let mut builder = OptsBuilder::default()
-            .user(self.user())
-            .pass(self.password())
-            .ip_or_hostname(endpoint.next().unwrap())
-            .db_name(self.database());
-        // TODO(nanderstabel): Fix ParseIntError
-        if let Some(port) = endpoint.next() {
-            builder = builder.tcp_port(port.parse().unwrap());
-        }
-
-        let mut conn = Conn::new(builder).await?;
-        let mut transaction = conn.start_transaction(TxOpts::default()).await?;
+        let transaction = self.tx.as_mut().unwrap();
 
         let mut iter = chunk.ops().iter().enumerate();
         while let Some((idx, op)) = iter.next() {
@@ -172,15 +188,15 @@ impl Sink for MySQLSink {
             };
             transaction.exec_drop(stmt, Params::Empty).await?;
         }
-
-        // Commit and drop the connection.
-        transaction.commit().await?;
-        drop(conn);
         Ok(())
     }
 
-    async fn begin_epoch(&mut self, _epoch: u64) -> Result<()> {
-        todo!()
+    async fn begin_epoch(&mut self, epoch: u64) -> Result<()> {
+        let transaction: Transaction<'static> =
+            self.conn.start_transaction(TxOpts::default()).await?;
+        self.tx = Some(transaction);
+        self.in_transaction_epoch = Some(epoch);
+        Ok(())
     }
 
     async fn commit(&mut self) -> Result<()> {
