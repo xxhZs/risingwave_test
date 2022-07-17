@@ -18,7 +18,8 @@ use itertools::Itertools;
 use risingwave_common::catalog::TableId;
 use risingwave_common::error::Result;
 use risingwave_common::types::ParallelUnitId;
-use risingwave_pb::common::ParallelUnit;
+use risingwave_pb::common::{ParallelUnit};
+
 use risingwave_pb::meta::table_fragments::{ActorState, ActorStatus, Fragment};
 use risingwave_pb::meta::TableFragments as ProstTableFragments;
 use risingwave_pb::stream_plan::source_node::SourceType;
@@ -245,6 +246,15 @@ impl TableFragments {
         for (&actor_id, actor_status) in &self.actor_status {
             let node_id = actor_status.get_parallel_unit().unwrap().worker_node_id as WorkerId;
             map.entry(node_id).or_insert_with(Vec::new).push(actor_id);
+        }
+        map
+    }
+
+    pub fn actor_to_node(&self) -> HashMap<ActorId, WorkerId> {
+        let mut map = HashMap::default();
+        for (&actor_id, actor_status) in &self.actor_status {
+            let node_id = actor_status.get_parallel_unit().unwrap().worker_node_id as WorkerId;
+            map.insert(actor_id, node_id);
         }
         map
     }
