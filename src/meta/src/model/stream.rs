@@ -18,8 +18,7 @@ use itertools::Itertools;
 use risingwave_common::catalog::TableId;
 use risingwave_common::error::Result;
 use risingwave_common::types::ParallelUnitId;
-use risingwave_pb::common::{ParallelUnit};
-
+use risingwave_pb::common::ParallelUnit;
 use risingwave_pb::meta::table_fragments::{ActorState, ActorStatus, Fragment};
 use risingwave_pb::meta::TableFragments as ProstTableFragments;
 use risingwave_pb::stream_plan::source_node::SourceType;
