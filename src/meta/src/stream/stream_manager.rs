@@ -396,23 +396,30 @@ impl<S> GlobalStreamManager<S>
             let mut new_actor = old_actor.clone();
 
             for upstream_actor_id in new_actor.upstream_actor_id.iter_mut() {
-
+                if let Some(new_actor_id) = old_actor_id_to_new_actor_id.get(upstream_actor_id) {
+                    *upstream_actor_id = *new_actor_id as u32;
+                }
             }
 
-
             for dispatcher in new_actor.dispatcher.iter_mut() {
-
+                for downstream_actor_id in dispatcher.downstream_actor_id.iter_mut() {
+                    if let Some(new_actor_id) = old_actor_id_to_new_actor_id.get(downstream_actor_id) {
+                        *downstream_actor_id = *new_actor_id as u32;
+                    }
+                }
             }
 
             new_actor.actor_id = id;
 
             // todo new_actor.vnode_bitmap
+            new_actor_map.insert(id, new_actor);
         }
 
         let mut hanging_channels: HashMap<WorkerId, Vec<HangingChannel>> = HashMap::new();
 
         for (_root_table_id, root_actor_id) in &roots {
             if let Some(upstreams) = upstream_actors.get(root_actor_id) {
+                // todo: wrong, need new work id
                 if let Some(root_worker_id) = actor_id_to_worker_id.get(root_actor_id) {
                     let root_worker = workers.get(root_worker_id).unwrap();
                     for (_upstream_table_id, upstream_actor_id) in upstreams {
@@ -455,34 +462,34 @@ impl<S> GlobalStreamManager<S>
         // //         node_actors.entry(worker_id).or_insert(vec![]).push(actor_id);
         // //     }
         // //
-        for (node_id, stream_actors) in &node_actors {
-            let node = locations.worker_locations.get(node_id).unwrap();
-
-            let client = self.client_pool.get(node).await?;
-
-            client
-                .to_owned()
-                .broadcast_actor_info_table(BroadcastActorInfoTableRequest {
-                    info: actor_infos_to_broadcast.clone(),
-                })
-                .await?;
-
-            // let stream_actors = actors
-            //     .iter()
-            //     .map(|actor_id| actor_map.get(actor_id).cloned().unwrap())
-            //     .collect::<Vec<_>>();
-
-            let request_id = Uuid::new_v4().to_string();
-            tracing::debug!(request_id = request_id.as_str(), actors = ?actors, "update actors");
-            client
-                .to_owned()
-                .update_actors(UpdateActorsRequest {
-                    request_id,
-                    actors: stream_actors.clone(),
-                    hanging_channels: node_hanging_channels.remove(node_id).unwrap_or_default(),
-                })
-                .await?;
-        }
+        // for (node_id, stream_actors) in &node_actors {
+        //     let node = locations.worker_locations.get(node_id).unwrap();
+        //
+        //     let client = self.client_pool.get(node).await?;
+        //
+        //     client
+        //         .to_owned()
+        //         .broadcast_actor_info_table(BroadcastActorInfoTableRequest {
+        //             info: actor_infos_to_broadcast.clone(),
+        //         })
+        //         .await?;
+        //
+        //     // let stream_actors = actors
+        //     //     .iter()
+        //     //     .map(|actor_id| actor_map.get(actor_id).cloned().unwrap())
+        //     //     .collect::<Vec<_>>();
+        //
+        //     let request_id = Uuid::new_v4().to_string();
+        //     tracing::debug!(request_id = request_id.as_str(), actors = ?actors, "update actors");
+        //     client
+        //         .to_owned()
+        //         .update_actors(UpdateActorsRequest {
+        //             request_id,
+        //             actors: stream_actors.clone(),
+        //             hanging_channels: node_hanging_channels.remove(node_id).unwrap_or_default(),
+        //         })
+        //         .await?;
+        // }
         //
         // // Build remaining hanging channels on compute nodes.
         // for (node_id, hanging_channels) in node_hanging_channels {
