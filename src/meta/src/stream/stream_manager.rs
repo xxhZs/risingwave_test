@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 use itertools::Itertools;
@@ -24,14 +24,14 @@ use risingwave_pb::catalog::{Source, Table};
 use risingwave_pb::common::{ActorInfo, ParallelUnitMapping, WorkerNode, WorkerType};
 use risingwave_pb::meta::table_fragments::{ActorState, ActorStatus};
 use risingwave_pb::stream_plan::stream_node::NodeBody;
-use risingwave_pb::stream_plan::{
-    ActorMapping, Dispatcher, DispatcherType, StreamActor, StreamNode,
-};
+use risingwave_pb::stream_plan::{ActorMapping, Dispatcher, DispatcherType, StreamNode, UpdateMutation};
 use risingwave_pb::stream_service::{
     BroadcastActorInfoTableRequest, BuildActorsRequest, HangingChannel, UpdateActorsRequest,
 };
 use risingwave_rpc_client::StreamClientPoolRef;
 use uuid::Uuid;
+use risingwave_pb::stream_plan::barrier::Mutation;
+use risingwave_pb::stream_plan::update_mutation::DispatcherUpdate;
 
 use super::ScheduledLocations;
 use crate::barrier::{BarrierManagerRef, Command};
@@ -321,7 +321,10 @@ impl<S> GlobalStreamManager<S>
             }
         }
 
-        println!("actor map {:#?}", actor_map);
+        // println!("actor to worker {:?}", actor_id_to_worker_id);
+        // println!("actor to stream {:?}", actor_map);
+        //
+        // println!("actor map {:#?}", actor_map);
 
         let mut actor_id_to_target_id = HashMap::new();
         let mut actor_id_to_table_id = HashMap::new();
@@ -346,201 +349,213 @@ impl<S> GlobalStreamManager<S>
         let mut downstream_actors = HashMap::new();
         let mut upstream_actors = HashMap::new();
 
-        for (table, actors) in &actors {
-            for actor_id in actors.keys() {
-                // todo, error
+        for (table, table_actors) in &actors {
+            for actor_id in table_actors.keys() {
                 let stream_actor = actor_map.get(actor_id).unwrap();
-                for dispatcher in &stream_actor.dispatcher {
-                    for downstream_actor_id in &dispatcher.downstream_actor_id {
-                        downstream_actors
-                            .entry(*actor_id as ActorId)
-                            .or_insert(vec![])
-                            .push(*downstream_actor_id as ActorId);
-                        upstream_actors
-                            .entry(*downstream_actor_id as ActorId)
-                            .or_insert(vec![])
-                            .push((*table, *actor_id));
-                    }
+
+                // todo: which is better?
+                // by `upstream_actor_id` or `dispatcher`
+                for &upstream_actor_id in &stream_actor.upstream_actor_id {
+                    upstream_actors.entry(*actor_id as ActorId).or_insert(vec![]).push(upstream_actor_id as ActorId);
+                    downstream_actors.entry(upstream_actor_id as ActorId).or_insert(vec![]).push((*table, *actor_id));
                 }
+
+                // for dispatcher in &stream_actor.dispatcher {
+                //     println!("actor {} downstreams {:?}", actor_id, dispatcher.downstream_actor_id);
+                //
+                //     println!("dispatcher {:?}", dispatcher.downstream_actor_id);
+                //
+                //     for downstream_actor_id in &dispatcher.downstream_actor_id {
+                //         downstream_actors
+                //             .entry(*actor_id as ActorId)
+                //             .or_insert(vec![])
+                //             .push(*downstream_actor_id as ActorId);
+                //         upstream_actors
+                //             .entry(*downstream_actor_id as ActorId)
+                //             .or_insert(vec![])
+                //             .push((*table, *actor_id));
+                //     }
+                // }
             }
         }
 
         println!("upstream {:?}", upstream_actors);
-        println!("downstream {:?}", upstream_actors);
+        println!("downstream {:?}", downstream_actors);
 
-        // let mut actor_ids = vec![];
-        // for table_actors in actors.values() {
-        //     for actor_id in table_actors.keys() {
-        //         actor_ids.push(*actor_id);
-        //     }
-        // }
-        //
-        // let mut in_degree_map: HashMap<ActorId, u32> =
-        //     actor_ids.iter().map(|actor_id| (*actor_id, 0)).collect();
-        //
-        // for actor_id in &actor_ids {
-        //     if let Some(downstream_actor_ids) = downstream_actors.get(actor_id) {
-        //         for downstream_actor_id in downstream_actor_ids {
-        //             if actor_ids.contains(downstream_actor_id) {
-        //                 *in_degree_map.entry(*downstream_actor_id).or_default() += 1
-        //             }
-        //         }
-        //     }
-        // }
-        //
-        // let roots = in_degree_map
-        //     .into_iter()
-        //     .filter(|(_, in_degree)| *in_degree == 0)
-        //     .map(|(actor_id, _)| (*actor_id_to_table_id.get(&actor_id).unwrap(), actor_id))
-        //     .collect_vec();
-        //
-        // println!("root actor_ids {:?}", roots);
-        //
-        // let mut old_actor_id_to_new_actor_id = HashMap::new();
-        // let mut new_actor_id_to_old_actor_id = HashMap::new();
-        //
-        // let mut new_actor_map = HashMap::new();
-        //
-        // for actor_id in &actor_ids {
-        //     let id = self.id_gen_manager.generate::<{ IdCategory::Actor }>().await? as ActorId;
-        //     old_actor_id_to_new_actor_id.insert(*actor_id, id);
-        //     new_actor_id_to_old_actor_id.insert(id, *actor_id);
-        //
-        //
-        //     let old_actor = actor_map.get(actor_id).unwrap();
-        //     let mut new_actor = old_actor.clone();
-        //
-        //     for upstream_actor_id in new_actor.upstream_actor_id.iter_mut() {
-        //         if let Some(new_actor_id) = old_actor_id_to_new_actor_id.get(upstream_actor_id) {
-        //             *upstream_actor_id = *new_actor_id as u32;
-        //         }
-        //     }
-        //
-        //     for dispatcher in new_actor.dispatcher.iter_mut() {
-        //         for downstream_actor_id in dispatcher.downstream_actor_id.iter_mut() {
-        //             if let Some(new_actor_id) = old_actor_id_to_new_actor_id.get(downstream_actor_id) {
-        //                 *downstream_actor_id = *new_actor_id as u32;
-        //             }
-        //         }
-        //     }
-        //
-        //     new_actor.actor_id = id;
-        //
-        //     new_actor_map.insert(id, new_actor);
-        // }
-        //
-        // let mut hanging_channels: HashMap<WorkerId, Vec<HangingChannel>> = HashMap::new();
-        //
-        // for (_root_table_id, root_actor_id) in &roots {
-        //     if let Some(upstreams) = upstream_actors.get(root_actor_id) {
-        //         // NOTE: here upstreams must not contain any new actor id
-        //         let root_worker_id = actor_id_to_target_id.get(root_actor_id).unwrap();
-        //         let root_worker = workers.get(root_worker_id).unwrap();
-        //         for (_upstream_table_id, upstream_actor_id) in upstreams {
-        //             let upstream_worker_id =
-        //                 actor_id_to_worker_id.get(upstream_actor_id).unwrap();
-        //             hanging_channels
-        //                 .entry(*upstream_worker_id)
-        //                 .or_default()
-        //                 .push(HangingChannel {
-        //                     upstream: Some(ActorInfo {
-        //                         actor_id: *upstream_actor_id,
-        //                         host: None,
-        //                     }),
-        //                     downstream: Some(ActorInfo {
-        //                         actor_id: *root_actor_id,
-        //                         host: root_worker.host.clone(),
-        //                     }),
-        //                 })
-        //         }
-        //     }
-        // }
-        //
-        // let mut node_actors: HashMap<WorkerId, Vec<_>> = HashMap::new();
-        // for (table_id, actors) in &actors {
-        //     for (actor_id, worker_id) in actors {
-        //         // let mut old_actor = actor_map.get(actor_id).unwrap().clone();
-        //         let actor = actor_map.get(actor_id).unwrap();
-        //
-        //         // old_actor.
-        //         node_actors
-        //             .entry(*worker_id)
-        //             .or_default()
-        //             .push(actor.clone());
-        //     }
-        // }
-        //
-        // //     let mut node_actors = HashMap::new();
-        // //     for (actor_id, worker_id) in actors {
-        // //         node_actors.entry(worker_id).or_insert(vec![]).push(actor_id);
-        // //     }
-        // //
-        // for (node_id, stream_actors) in &node_actors {
-        //     let node = locations.worker_locations.get(node_id).unwrap();
-        //
-        //     let client = self.client_pool.get(node).await?;
-        //
-        //     client
-        //         .to_owned()
-        //         .broadcast_actor_info_table(BroadcastActorInfoTableRequest {
-        //             info: actor_infos_to_broadcast.clone(),
-        //         })
-        //         .await?;
-        //
-        //     // let stream_actors = actors
-        //     //     .iter()
-        //     //     .map(|actor_id| actor_map.get(actor_id).cloned().unwrap())
-        //     //     .collect::<Vec<_>>();
-        //
-        //     let request_id = Uuid::new_v4().to_string();
-        //     tracing::debug!(request_id = request_id.as_str(), actors = ?actors, "update actors");
-        //     client
-        //         .to_owned()
-        //         .update_actors(UpdateActorsRequest {
-        //             request_id,
-        //             actors: stream_actors.clone(),
-        //             hanging_channels: node_hanging_channels.remove(node_id).unwrap_or_default(),
-        //         })
-        //         .await?;
-        // }
-        //
-        // // Build remaining hanging channels on compute nodes.
-        // for (node_id, hanging_channels) in node_hanging_channels {
-        //     let node = locations.worker_locations.get(&node_id).unwrap();
-        //
-        //     let client = self.client_pool.get(node).await?;
-        //     let request_id = Uuid::new_v4().to_string();
-        //
-        //     client
-        //         .to_owned()
-        //         .update_actors(UpdateActorsRequest {
-        //             request_id,
-        //             actors: vec![],
-        //             hanging_channels,
-        //         })
-        //         .await?;
-        // }
-        //
-        // // In the second stage, each [`WorkerNode`] builds local actors and connect them with
-        // // channels.
-        // for (node_id, stream_actors) in node_actors {
-        //     let node = locations.worker_locations.get(&node_id).unwrap();
-        //
-        //     let client = self.client_pool.get(node).await?;
-        //
-        //     let request_id = Uuid::new_v4().to_string();
-        //     tracing::debug!(request_id = request_id.as_str(), actors = ?actors, "build actors");
-        //     client
-        //         .to_owned()
-        //         .build_actors(BuildActorsRequest {
-        //             request_id,
-        //             actor_id: stream_actors
-        //                 .iter()
-        //                 .map(|stream_actor| stream_actor.actor_id)
-        //                 .collect(),
-        //         })
-        //         .await?;
-        // }
+        let mut actor_ids = BTreeSet::new();
+        for table_actors in actors.values() {
+            for actor_id in table_actors.keys() {
+                actor_ids.insert(*actor_id);
+            }
+        }
+
+
+        let mut old_actor_id_to_new_actor_id = HashMap::new();
+        let mut new_actor_id_to_old_actor_id = HashMap::new();
+
+        let mut new_actor_map = HashMap::new();
+
+        for actor_id in &actor_ids {
+            let id = self.id_gen_manager.generate::<{ IdCategory::Actor }>().await? as ActorId;
+            old_actor_id_to_new_actor_id.insert(*actor_id, id);
+            new_actor_id_to_old_actor_id.insert(id, *actor_id);
+
+
+            let old_actor = actor_map.get(actor_id).unwrap();
+            let mut new_actor = old_actor.clone();
+
+            for upstream_actor_id in &mut new_actor.upstream_actor_id {
+                if let Some(new_actor_id) = old_actor_id_to_new_actor_id.get(upstream_actor_id) {
+                    *upstream_actor_id = *new_actor_id as u32;
+                }
+            }
+
+            for dispatcher in &mut new_actor.dispatcher {
+                for downstream_actor_id in &mut dispatcher.downstream_actor_id {
+                    if let Some(new_actor_id) = old_actor_id_to_new_actor_id.get(downstream_actor_id) {
+                        *downstream_actor_id = *new_actor_id as u32;
+                    }
+                }
+            }
+
+            new_actor.actor_id = id;
+
+            new_actor_map.insert(*actor_id as ActorId, new_actor);
+        }
+
+        let mut node_hanging_channels: HashMap<WorkerId, Vec<HangingChannel>> = HashMap::new();
+
+        for actor_id in &actor_ids {
+            if let Some(upstream_actor_ids) = upstream_actors.get(actor_id) {
+                let worker_id = actor_id_to_target_id.get(actor_id).unwrap();
+                let worker = workers.get(worker_id).unwrap();
+
+                for upstream_actor_id in upstream_actor_ids {
+                    if actor_ids.contains(upstream_actor_id) {
+                        continue;
+                    }
+
+                    let new_actor_id = old_actor_id_to_new_actor_id.get(actor_id).unwrap();
+
+                    println!("need a hanging channel from {} to {}({})", upstream_actor_id, actor_id, new_actor_id);
+
+                    // note: must exists
+                    let upstream_worker_id = actor_id_to_worker_id.get(upstream_actor_id).unwrap();
+
+                    node_hanging_channels.entry(*upstream_worker_id).or_default()
+                        .push(HangingChannel {
+                            upstream: Some(ActorInfo {
+                                actor_id: *upstream_actor_id,
+                                host: None,
+                            }),
+                            downstream: Some(ActorInfo {
+                                actor_id: *new_actor_id,
+                                host: worker.host.clone(),
+                            }),
+                        })
+                }
+            }
+        }
+
+        let mut actor_infos_to_broadcast = vec![];
+        let mut node_actors: HashMap<WorkerId, Vec<_>> = HashMap::new();
+        for (actor_id, &worker_id) in &actor_id_to_target_id {
+            let new_actor = new_actor_map.get(actor_id).unwrap();
+            node_actors.entry(worker_id).or_default().push(new_actor.clone());
+
+            let worker = workers.get(&worker_id).unwrap();
+            actor_infos_to_broadcast.push(ActorInfo {
+                actor_id: new_actor.actor_id,
+                host: worker.host.clone(),
+            })
+        }
+
+        for (node_id, stream_actors) in &node_actors {
+            let node = workers.get(node_id).unwrap();
+
+            let client = self.client_pool.get(node).await?;
+
+            client
+                .to_owned()
+                .broadcast_actor_info_table(BroadcastActorInfoTableRequest {
+                    info: actor_infos_to_broadcast.clone(),
+                })
+                .await?;
+
+            let request_id = Uuid::new_v4().to_string();
+            tracing::debug!(request_id = request_id.as_str(), actors = ?actors, "update actors");
+            client
+                .to_owned()
+                .update_actors(UpdateActorsRequest {
+                    request_id,
+                    actors: stream_actors.clone(),
+                    hanging_channels: node_hanging_channels.remove(node_id).unwrap_or_default(),
+                })
+                .await?;
+        }
+
+        // Build remaining hanging channels on compute nodes.
+        for (node_id, hanging_channels) in node_hanging_channels {
+            let node = workers.get(&node_id).unwrap();
+
+            let client = self.client_pool.get(node).await?;
+            let request_id = Uuid::new_v4().to_string();
+
+            client
+                .to_owned()
+                .update_actors(UpdateActorsRequest {
+                    request_id,
+                    actors: vec![],
+                    hanging_channels,
+                })
+                .await?;
+        }
+
+        // In the second stage, each [`WorkerNode`] builds local actors and connect them with
+        // channels.
+        for (node_id, stream_actors) in node_actors {
+            let node = workers.get(&node_id).unwrap();
+
+            let client = self.client_pool.get(node).await?;
+
+            let request_id = Uuid::new_v4().to_string();
+            tracing::debug!(request_id = request_id.as_str(), actors = ?actors, "build actors");
+            client
+                .to_owned()
+                .build_actors(BuildActorsRequest {
+                    request_id,
+                    actor_id: stream_actors
+                        .iter()
+                        .map(|stream_actor| stream_actor.actor_id)
+                        .collect(),
+                })
+                .await?;
+        }
+
+
+        let mut actor_dispatcher_update = HashMap::new();
+
+        for actor_id in &actor_ids {
+            if let Some(upstream_actor_ids) = upstream_actors.get(actor_id) {
+                for upstream_actor_id in upstream_actor_ids {
+                    if actor_ids.contains(upstream_actor_id) {
+                        continue;
+                    }
+
+                    actor_dispatcher_update.insert(*upstream_actor_id, DispatcherUpdate {
+                        dispatcher_id: 0,
+                        hash_mapping: None,
+                        added_downstream_actor_id: vec![],
+                        removed_downstream_actor_id: vec![],
+                    });
+                }
+            }
+        }
+
+        self.barrier_manager.run_command(Command::Plain(Some(Mutation::Update(UpdateMutation {
+            actor_dispatcher_update,
+        }))));
+
         // //
         // if let Err(err) = self
         //     .barrier_manager
@@ -1579,6 +1594,10 @@ mod tests {
                     operator_id,
                     ..Default::default()
                 }),
+                // dispatcher: vec![Dispatcher{
+                //     dispatcher_id: 0,
+                //     downstream_actor_id: vec![]
+                // }],
                 ..Default::default()
             })
             .collect_vec()
@@ -1592,8 +1611,8 @@ mod tests {
 
         let actor_groups = vec![
             make_mview_stream_actors_custom(
-                0,
-                2,
+                100,
+                102,
                 NodeBody::Source(SourceNode {
                     table_id: table_id.table_id(),
                     ..Default::default()
@@ -1602,41 +1621,41 @@ mod tests {
                 None,
             ),
             make_mview_stream_actors_custom(
-                2,
-                5,
+                102,
+                105,
                 NodeBody::Filter(FilterNode {
                     ..Default::default()
                 }),
                 0,
-                Some(vec![0, 1]),
+                Some(vec![100, 101]),
             ),
             make_mview_stream_actors_custom(
-                5,
-                9,
+                105,
+                109,
                 NodeBody::Filter(FilterNode {
                     ..Default::default()
                 }),
                 0,
-                Some(vec![2, 3, 4]),
+                Some(vec![102, 103, 104]),
             ),
             make_mview_stream_actors_custom(
-                9,
-                11,
+                109,
+                111,
                 NodeBody::Filter(FilterNode {
                     ..Default::default()
                 }),
                 0,
-                Some(vec![5, 6, 7, 8]),
+                Some(vec![105, 106, 107, 108]),
             ),
             make_mview_stream_actors_custom(
-                11,
-                12,
+                111,
+                112,
                 NodeBody::Materialize(MaterializeNode {
                     table_id: table_id.table_id(),
                     ..Default::default()
                 }),
                 0,
-                Some(vec![9, 10]),
+                Some(vec![109, 110]),
             ),
         ];
 
@@ -1672,10 +1691,10 @@ mod tests {
             .await?;
 
         let mut actor_workers = HashMap::new();
-        actor_workers.insert(0, 1);
-        actor_workers.insert(6, 1);
-        actor_workers.insert(8, 1);
-        actor_workers.insert(10, 1);
+        actor_workers.insert(100, 1);
+        actor_workers.insert(106, 1);
+        actor_workers.insert(108, 1);
+        actor_workers.insert(110, 1);
 
         let mut actors = HashMap::new();
         actors.insert(table_id, actor_workers);
