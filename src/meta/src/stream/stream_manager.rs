@@ -303,13 +303,6 @@ impl<S> GlobalStreamManager<S>
             .map(|worker_node| (worker_node.id, worker_node))
             .collect();
 
-        let mut actor_id_to_table_id = HashMap::new();
-        for (table_id, map) in &actors {
-            for actor_id in map.keys() {
-                actor_id_to_table_id.insert(*actor_id, *table_id);
-            }
-        }
-
         let mut actor_id_to_worker_id = HashMap::new();
         let mut actor_map = HashMap::new();
 
@@ -326,8 +319,28 @@ impl<S> GlobalStreamManager<S>
             for (actor_id, stream_actor) in table_fragments.actor_map() {
                 actor_map.insert(actor_id, stream_actor);
             }
+        }
 
-            // table_fragment_groups.insert(*table_id, table_fragments);
+        println!("actor map {:#?}", actor_map);
+
+        let mut actor_id_to_target_id = HashMap::new();
+        let mut actor_id_to_table_id = HashMap::new();
+        for (table_id, map) in &actors {
+            for actor_id in map.keys() {
+                if !actor_map.contains_key(actor_id) {
+                    bail!("actor {} not found", actor_id);
+                }
+
+                actor_id_to_table_id.insert(*actor_id, *table_id);
+            }
+
+            for (&actor_id, &worker_id) in map {
+                if !workers.contains_key(&worker_id) {
+                    //bail!("worker {} not found", worker_id);
+                }
+
+                actor_id_to_target_id.insert(actor_id, worker_id);
+            }
         }
 
         let mut downstream_actors = HashMap::new();
@@ -352,110 +365,110 @@ impl<S> GlobalStreamManager<S>
             }
         }
 
-        let mut actor_ids = vec![];
-        for table_actors in actors.values() {
-            for actor_id in table_actors.keys() {
-                actor_ids.push(*actor_id);
-            }
-        }
+        println!("upstream {:?}", upstream_actors);
+        println!("downstream {:?}", upstream_actors);
 
-        let mut in_degree_map: HashMap<ActorId, u32> =
-            actor_ids.iter().map(|actor_id| (*actor_id, 0)).collect();
-
-        for actor_id in &actor_ids {
-            if let Some(downstream_actor_ids) = downstream_actors.get(actor_id) {
-                for downstream_actor_id in downstream_actor_ids {
-                    if actor_ids.contains(downstream_actor_id) {
-                        *in_degree_map.entry(*downstream_actor_id).or_default() += 1
-                    }
-                }
-            }
-        }
-
-        let roots = in_degree_map
-            .into_iter()
-            .filter(|(_, in_degree)| *in_degree == 0)
-            .map(|(actor_id, _)| (*actor_id_to_table_id.get(&actor_id).unwrap(), actor_id))
-            .collect_vec();
-
-        println!("root actor_ids {:?}", roots);
-
-
-        let mut old_actor_id_to_new_actor_id = HashMap::new();
-        let mut new_actor_id_to_old_actor_id = HashMap::new();
-
-        let mut new_actor_map = HashMap::new();
-
-        for actor_id in &actor_ids {
-            let id = self.id_gen_manager.generate::<{ IdCategory::Actor }>().await? as ActorId;
-            old_actor_id_to_new_actor_id.insert(*actor_id, id);
-            new_actor_id_to_old_actor_id.insert(id, *actor_id);
-
-
-            let old_actor = actor_map.get(actor_id).unwrap();
-            let mut new_actor = old_actor.clone();
-
-            for upstream_actor_id in new_actor.upstream_actor_id.iter_mut() {
-                if let Some(new_actor_id) = old_actor_id_to_new_actor_id.get(upstream_actor_id) {
-                    *upstream_actor_id = *new_actor_id as u32;
-                }
-            }
-
-            for dispatcher in new_actor.dispatcher.iter_mut() {
-                for downstream_actor_id in dispatcher.downstream_actor_id.iter_mut() {
-                    if let Some(new_actor_id) = old_actor_id_to_new_actor_id.get(downstream_actor_id) {
-                        *downstream_actor_id = *new_actor_id as u32;
-                    }
-                }
-            }
-
-            new_actor.actor_id = id;
-
-            // todo new_actor.vnode_bitmap
-            new_actor_map.insert(id, new_actor);
-        }
-
-        let mut hanging_channels: HashMap<WorkerId, Vec<HangingChannel>> = HashMap::new();
-
-        for (_root_table_id, root_actor_id) in &roots {
-            if let Some(upstreams) = upstream_actors.get(root_actor_id) {
-                // todo: wrong, need new work id
-                if let Some(root_worker_id) = actor_id_to_worker_id.get(root_actor_id) {
-                    let root_worker = workers.get(root_worker_id).unwrap();
-                    for (_upstream_table_id, upstream_actor_id) in upstreams {
-                        let upstream_worker_id =
-                            actor_id_to_worker_id.get(upstream_actor_id).unwrap();
-                        hanging_channels
-                            .entry(*upstream_worker_id)
-                            .or_default()
-                            .push(HangingChannel {
-                                upstream: Some(ActorInfo {
-                                    actor_id: *upstream_actor_id,
-                                    host: None,
-                                }),
-                                downstream: Some(ActorInfo {
-                                    actor_id: *root_actor_id,
-                                    host: root_worker.host.clone(),
-                                }),
-                            })
-                    }
-                }
-            }
-        }
-
-        let mut node_actors: HashMap<WorkerId, Vec<_>> = HashMap::new();
-        for (table_id, actors) in &actors {
-            for (actor_id, worker_id) in actors {
-                // let mut old_actor = actor_map.get(actor_id).unwrap().clone();
-                let actor = actor_map.get(actor_id).unwrap();
-
-                // old_actor.
-                node_actors
-                    .entry(*worker_id)
-                    .or_default()
-                    .push(actor.clone());
-            }
-        }
+        // let mut actor_ids = vec![];
+        // for table_actors in actors.values() {
+        //     for actor_id in table_actors.keys() {
+        //         actor_ids.push(*actor_id);
+        //     }
+        // }
+        //
+        // let mut in_degree_map: HashMap<ActorId, u32> =
+        //     actor_ids.iter().map(|actor_id| (*actor_id, 0)).collect();
+        //
+        // for actor_id in &actor_ids {
+        //     if let Some(downstream_actor_ids) = downstream_actors.get(actor_id) {
+        //         for downstream_actor_id in downstream_actor_ids {
+        //             if actor_ids.contains(downstream_actor_id) {
+        //                 *in_degree_map.entry(*downstream_actor_id).or_default() += 1
+        //             }
+        //         }
+        //     }
+        // }
+        //
+        // let roots = in_degree_map
+        //     .into_iter()
+        //     .filter(|(_, in_degree)| *in_degree == 0)
+        //     .map(|(actor_id, _)| (*actor_id_to_table_id.get(&actor_id).unwrap(), actor_id))
+        //     .collect_vec();
+        //
+        // println!("root actor_ids {:?}", roots);
+        //
+        // let mut old_actor_id_to_new_actor_id = HashMap::new();
+        // let mut new_actor_id_to_old_actor_id = HashMap::new();
+        //
+        // let mut new_actor_map = HashMap::new();
+        //
+        // for actor_id in &actor_ids {
+        //     let id = self.id_gen_manager.generate::<{ IdCategory::Actor }>().await? as ActorId;
+        //     old_actor_id_to_new_actor_id.insert(*actor_id, id);
+        //     new_actor_id_to_old_actor_id.insert(id, *actor_id);
+        //
+        //
+        //     let old_actor = actor_map.get(actor_id).unwrap();
+        //     let mut new_actor = old_actor.clone();
+        //
+        //     for upstream_actor_id in new_actor.upstream_actor_id.iter_mut() {
+        //         if let Some(new_actor_id) = old_actor_id_to_new_actor_id.get(upstream_actor_id) {
+        //             *upstream_actor_id = *new_actor_id as u32;
+        //         }
+        //     }
+        //
+        //     for dispatcher in new_actor.dispatcher.iter_mut() {
+        //         for downstream_actor_id in dispatcher.downstream_actor_id.iter_mut() {
+        //             if let Some(new_actor_id) = old_actor_id_to_new_actor_id.get(downstream_actor_id) {
+        //                 *downstream_actor_id = *new_actor_id as u32;
+        //             }
+        //         }
+        //     }
+        //
+        //     new_actor.actor_id = id;
+        //
+        //     new_actor_map.insert(id, new_actor);
+        // }
+        //
+        // let mut hanging_channels: HashMap<WorkerId, Vec<HangingChannel>> = HashMap::new();
+        //
+        // for (_root_table_id, root_actor_id) in &roots {
+        //     if let Some(upstreams) = upstream_actors.get(root_actor_id) {
+        //         // NOTE: here upstreams must not contain any new actor id
+        //         let root_worker_id = actor_id_to_target_id.get(root_actor_id).unwrap();
+        //         let root_worker = workers.get(root_worker_id).unwrap();
+        //         for (_upstream_table_id, upstream_actor_id) in upstreams {
+        //             let upstream_worker_id =
+        //                 actor_id_to_worker_id.get(upstream_actor_id).unwrap();
+        //             hanging_channels
+        //                 .entry(*upstream_worker_id)
+        //                 .or_default()
+        //                 .push(HangingChannel {
+        //                     upstream: Some(ActorInfo {
+        //                         actor_id: *upstream_actor_id,
+        //                         host: None,
+        //                     }),
+        //                     downstream: Some(ActorInfo {
+        //                         actor_id: *root_actor_id,
+        //                         host: root_worker.host.clone(),
+        //                     }),
+        //                 })
+        //         }
+        //     }
+        // }
+        //
+        // let mut node_actors: HashMap<WorkerId, Vec<_>> = HashMap::new();
+        // for (table_id, actors) in &actors {
+        //     for (actor_id, worker_id) in actors {
+        //         // let mut old_actor = actor_map.get(actor_id).unwrap().clone();
+        //         let actor = actor_map.get(actor_id).unwrap();
+        //
+        //         // old_actor.
+        //         node_actors
+        //             .entry(*worker_id)
+        //             .or_default()
+        //             .push(actor.clone());
+        //     }
+        // }
         //
         // //     let mut node_actors = HashMap::new();
         // //     for (actor_id, worker_id) in actors {
