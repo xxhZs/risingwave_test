@@ -288,6 +288,7 @@ impl<S> GlobalStreamManager<S>
                                               actor_map: &mut HashMap<ActorId, StreamActor>,
                                               actor_id_to_worker_id: &mut HashMap<ActorId, WorkerId>,
                                               actors: &mut HashMap<TableId, HashMap<ActorId, WorkerId>>,
+                                              chain_actor_ids: &mut HashSet<ActorId>,
                                               cache: &mut HashSet<TableId>) -> Result<()> {
         for table_id in table_ids {
             if cache.contains(&table_id) {
@@ -303,10 +304,11 @@ impl<S> GlobalStreamManager<S>
                 actor_map.insert(actor_id, actor.clone());
             }
 
-            let chain_actor_ids = table_fragments.chain_actor_ids();
-            if !chain_actor_ids.is_empty() {
+            let table_chain_actor_ids = table_fragments.chain_actor_ids();
+            if !table_chain_actor_ids.is_empty() {
+                chain_actor_ids.extend(table_chain_actor_ids);
                 let dependent_table_ids = table_fragments.dependent_table_ids();
-                self.resolve_migrate_dependent_actors(dependent_table_ids, actor_map, actor_id_to_worker_id, actors, cache).await?;
+                self.resolve_migrate_dependent_actors(dependent_table_ids, actor_map, actor_id_to_worker_id, actors, chain_actor_ids, cache).await?;
             }
 
             cache.insert(table_id);
@@ -336,10 +338,11 @@ impl<S> GlobalStreamManager<S>
 
         let mut actors = actors;
 
+        let mut chain_actor_ids = HashSet::new();
         let mut actor_id_to_worker_id = HashMap::new();
         let mut actor_map = HashMap::new();
         let mut _cache = HashSet::new();
-        self.resolve_migrate_dependent_actors(actors.keys().cloned().collect(), &mut actor_map, &mut actor_id_to_worker_id, &mut actors, &mut _cache).await?;
+        self.resolve_migrate_dependent_actors(actors.keys().cloned().collect(), &mut actor_map, &mut actor_id_to_worker_id, &mut actors, &mut chain_actor_ids, &mut _cache).await?;
 
         let mut actor_id_to_target_id = HashMap::new();
         let mut actor_id_to_table_id = HashMap::new();
@@ -389,9 +392,17 @@ impl<S> GlobalStreamManager<S>
             old_actor_id_to_new_actor_id.insert(*actor_id, id);
             new_actor_id_to_old_actor_id.insert(id, *actor_id);
 
-
             let old_actor = actor_map.get(actor_id).unwrap();
             let mut new_actor = old_actor.clone();
+
+            if chain_actor_ids.contains(actor_id) {
+                let upstream_actor_ids = upstream_actors.get(actor_id).unwrap();
+                assert_eq!(upstream_actor_ids.len(), 1);
+                let (upstream_actor_id, _) = upstream_actor_ids.iter().next().unwrap();
+                if actor_ids.contains(upstream_actor_id) {
+                    new_actor.same_worker_node_as_upstream = false;
+                }
+            }
 
             for upstream_actor_id in &mut new_actor.upstream_actor_id {
                 if let Some(new_actor_id) = old_actor_id_to_new_actor_id.get(upstream_actor_id) {
