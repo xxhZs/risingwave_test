@@ -286,22 +286,20 @@ impl<S> GlobalStreamManager<S>
         &self,
         actors: HashMap<TableId, HashMap<ActorId, WorkerId>>,
     ) -> Result<HashMap<ActorId, ActorId>> {
-        let workers = self
+        let worker_nodes: HashMap<WorkerId, WorkerNode> = self
             .cluster_manager
             .list_worker_node(
                 WorkerType::ComputeNode,
                 Some(risingwave_pb::common::worker_node::State::Running),
             )
-            .await;
-
-        if workers.is_empty() {
-            bail!("no available compute node in the cluster");
-        }
-
-        let workers: HashMap<WorkerId, WorkerNode> = workers
+            .await
             .into_iter()
             .map(|worker_node| (worker_node.id, worker_node))
             .collect();
+
+        if worker_nodes.is_empty() {
+            bail!("no available compute node in the cluster");
+        }
 
         let mut actor_id_to_worker_id = HashMap::new();
         let mut actor_map = HashMap::new();
@@ -312,19 +310,9 @@ impl<S> GlobalStreamManager<S>
                 .select_table_fragments_by_table_id(table_id)
                 .await?;
 
-            for (actor_id, worker_id) in table_fragments.actor_to_node() {
-                actor_id_to_worker_id.insert(actor_id, worker_id);
-            }
-
-            for (actor_id, stream_actor) in table_fragments.actor_map() {
-                actor_map.insert(actor_id, stream_actor);
-            }
+            actor_id_to_worker_id.extend(table_fragments.actor_to_node());
+            actor_map.extend(table_fragments.actor_map());
         }
-
-        // println!("actor to worker {:?}", actor_id_to_worker_id);
-        // println!("actor to stream {:?}", actor_map);
-        //
-        // println!("actor map {:#?}", actor_map);
 
         let mut actor_id_to_target_id = HashMap::new();
         let mut actor_id_to_table_id = HashMap::new();
@@ -338,7 +326,7 @@ impl<S> GlobalStreamManager<S>
             }
 
             for (&actor_id, &worker_id) in map {
-                if !workers.contains_key(&worker_id) {
+                if !worker_nodes.contains_key(&worker_id) {
                     //bail!("worker {} not found", worker_id);
                 }
 
@@ -349,34 +337,56 @@ impl<S> GlobalStreamManager<S>
         let mut downstream_actors = HashMap::new();
         let mut upstream_actors = HashMap::new();
 
-        for (table, table_actors) in &actors {
-            for actor_id in table_actors.keys() {
-                let stream_actor = actor_map.get(actor_id).unwrap();
+        // for (_table, table_actors) in &actors {
+        //     for actor_id in table_actors.keys() {
+        //         let stream_actor = actor_map.get(actor_id).unwrap();
+        //         for upstream_actor_id in &stream_actor.upstream_actor_id {
+        //             let upstream_actor = actor_map.get(upstream_actor_id).unwrap();
+        //
+        //             for dispatcher in &upstream_actor.dispatcher {
+        //                 println!("downstream id for {} is -> {:?}", actor_id, dispatcher.downstream_actor_id);
+        //
+        //                 for downstream_actor_id in &dispatcher.downstream_actor_id {
+        //                     downstream_actors
+        //                         .entry(*upstream_actor_id as ActorId)
+        //                         .or_insert(vec![])
+        //                         .push(*downstream_actor_id as ActorId);
+        //                     upstream_actors
+        //                         .entry(*downstream_actor_id as ActorId)
+        //                         .or_insert(vec![])
+        //                         .push((*upstream_actor_id as ActorId, dispatcher.dispatcher_id));
+        //                 }
+        //
+        //
+        //                 // for downstream_actor_id in &dispatcher.downstream_actor_id {
+        //                 //     downstream_actors
+        //                 //         .entry(*actor_id as ActorId)
+        //                 //         .or_insert(vec![])
+        //                 //         .push(*downstream_actor_id as ActorId);
+        //                 //     upstream_actors
+        //                 //         .entry(*downstream_actor_id as ActorId)
+        //                 //         .or_insert(vec![])
+        //                 //         .push((*table, dispatcher.dispatcher_id, *actor_id));
+        //                 // }
+        //             }
+        //         }
+        //     }
+        // }
 
-                // todo: which is better?
-                // by `upstream_actor_id` or `dispatcher`
-                // for &upstream_actor_id in &stream_actor.upstream_actor_id {
-                //     upstream_actors.entry(*actor_id as ActorId).or_insert(vec![]).push(upstream_actor_id as ActorId);
-                //     downstream_actors.entry(upstream_actor_id as ActorId).or_insert(vec![]).push((*table, *actor_id));
-                // }
-
-                for dispatcher in &stream_actor.dispatcher {
-                    for downstream_actor_id in &dispatcher.downstream_actor_id {
-                        downstream_actors
-                            .entry(*actor_id as ActorId)
-                            .or_insert(vec![])
-                            .push(*downstream_actor_id as ActorId);
-                        upstream_actors
-                            .entry(*downstream_actor_id as ActorId)
-                            .or_insert(vec![])
-                            .push((*table, dispatcher.dispatcher_id, *actor_id));
-                    }
+        for (actor_id, stream_actor) in &actor_map {
+            for dispatcher in &stream_actor.dispatcher {
+                for downstream_actor_id in &dispatcher.downstream_actor_id {
+                    downstream_actors
+                        .entry(*actor_id as ActorId)
+                        .or_insert(vec![])
+                        .push(*downstream_actor_id as ActorId);
+                    upstream_actors
+                        .entry(*downstream_actor_id as ActorId)
+                        .or_insert(vec![])
+                        .push((*actor_id, dispatcher.dispatcher_id));
                 }
             }
         }
-
-        println!("upstream {:?}", upstream_actors);
-        println!("downstream {:?}", downstream_actors);
 
         let mut actor_ids = BTreeSet::new();
         for table_actors in actors.values() {
@@ -387,7 +397,6 @@ impl<S> GlobalStreamManager<S>
 
         let mut old_actor_id_to_new_actor_id = HashMap::new();
         let mut new_actor_id_to_old_actor_id = HashMap::new();
-
         let mut new_actor_map = HashMap::new();
 
         for actor_id in &actor_ids {
@@ -423,9 +432,9 @@ impl<S> GlobalStreamManager<S>
         for actor_id in &actor_ids {
             if let Some(upstream_actor_ids) = upstream_actors.get(actor_id) {
                 let worker_id = actor_id_to_target_id.get(actor_id).unwrap();
-                let worker = workers.get(worker_id).unwrap();
+                let worker = worker_nodes.get(worker_id).unwrap();
 
-                for (_, _, upstream_actor_id) in upstream_actor_ids {
+                for (upstream_actor_id, _upstream_dispatcher_id) in upstream_actor_ids {
                     if actor_ids.contains(upstream_actor_id) {
                         continue;
                     }
@@ -458,7 +467,7 @@ impl<S> GlobalStreamManager<S>
             let new_actor = new_actor_map.get(actor_id).unwrap();
             node_actors.entry(worker_id).or_default().push(new_actor.clone());
 
-            let worker = workers.get(&worker_id).unwrap();
+            let worker = worker_nodes.get(&worker_id).unwrap();
             actor_infos_to_broadcast.push(ActorInfo {
                 actor_id: new_actor.actor_id,
                 host: worker.host.clone(),
@@ -466,7 +475,7 @@ impl<S> GlobalStreamManager<S>
         }
 
         for (node_id, stream_actors) in &node_actors {
-            let node = workers.get(node_id).unwrap();
+            let node = worker_nodes.get(node_id).unwrap();
 
             let client = self.client_pool.get(node).await?;
 
@@ -491,7 +500,7 @@ impl<S> GlobalStreamManager<S>
 
         // Build remaining hanging channels on compute nodes.
         for (node_id, hanging_channels) in node_hanging_channels {
-            let node = workers.get(&node_id).unwrap();
+            let node = worker_nodes.get(&node_id).unwrap();
 
             let client = self.client_pool.get(node).await?;
             let request_id = Uuid::new_v4().to_string();
@@ -509,7 +518,7 @@ impl<S> GlobalStreamManager<S>
         // In the second stage, each [`WorkerNode`] builds local actors and connect them with
         // channels.
         for (node_id, stream_actors) in node_actors {
-            let node = workers.get(&node_id).unwrap();
+            let node = worker_nodes.get(&node_id).unwrap();
 
             let client = self.client_pool.get(node).await?;
 
@@ -527,12 +536,10 @@ impl<S> GlobalStreamManager<S>
                 .await?;
         }
 
-
         let mut actor_dispatcher_update = HashMap::new();
-
         for actor_id in &actor_ids {
             if let Some(upstream_actor_ids) = upstream_actors.get(actor_id) {
-                for (_, upstream_dispatcher_id, upstream_actor_id) in upstream_actor_ids {
+                for (upstream_actor_id, upstream_dispatcher_id) in upstream_actor_ids {
                     if actor_ids.contains(upstream_actor_id) {
                         continue;
                     }
@@ -1572,25 +1579,32 @@ mod tests {
         start: usize,
         stop: usize,
         node_body: NodeBody,
-        operator_id: u64,
-        upstream_actor_id: Option<Vec<u32>>,
+        dispatchers: Vec<Dispatcher>,
+        // upstream_actor_ids: Vec<ActorId>,
     ) -> Vec<StreamActor> {
-        (start..stop)
-            .map(|i| StreamActor {
+        let mut actors = vec![];
+        for i in start..stop {
+            let mut new_dispatchers = vec![];
+
+            for dispatcher in &dispatchers {
+                let mut new_dispatcher = dispatcher.clone();
+                new_dispatcher.dispatcher_id = dispatcher.dispatcher_id * 1000 + i as u64;
+                new_dispatchers.push(new_dispatcher);
+            }
+
+            actors.push(StreamActor {
                 actor_id: i as u32,
-                upstream_actor_id: upstream_actor_id.clone().unwrap_or_default(),
                 nodes: Some(StreamNode {
                     node_body: Some(node_body.clone()),
-                    operator_id,
                     ..Default::default()
                 }),
-                // dispatcher: vec![Dispatcher{
-                //     dispatcher_id: 0,
-                //     downstream_actor_id: vec![]
-                // }],
+                dispatcher: new_dispatchers,
+                // upstream_actor_id: upstream_actor_ids,
                 ..Default::default()
             })
-            .collect_vec()
+        }
+
+        actors
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1607,8 +1621,11 @@ mod tests {
                     table_id: table_id.table_id(),
                     ..Default::default()
                 }),
-                0,
-                None,
+                vec![Dispatcher {
+                    dispatcher_id: 0,
+                    downstream_actor_id: (102..105).collect_vec(),
+                    ..Default::default()
+                }],
             ),
             make_mview_stream_actors_custom(
                 102,
@@ -1616,8 +1633,11 @@ mod tests {
                 NodeBody::Filter(FilterNode {
                     ..Default::default()
                 }),
-                0,
-                Some(vec![100, 101]),
+                vec![Dispatcher {
+                    dispatcher_id: 1,
+                    downstream_actor_id: (105..109).collect_vec(),
+                    ..Default::default()
+                }],
             ),
             make_mview_stream_actors_custom(
                 105,
@@ -1625,8 +1645,11 @@ mod tests {
                 NodeBody::Filter(FilterNode {
                     ..Default::default()
                 }),
-                0,
-                Some(vec![102, 103, 104]),
+                vec![Dispatcher {
+                    dispatcher_id: 2,
+                    downstream_actor_id: (109..111).collect_vec(),
+                    ..Default::default()
+                }],
             ),
             make_mview_stream_actors_custom(
                 109,
@@ -1634,8 +1657,11 @@ mod tests {
                 NodeBody::Filter(FilterNode {
                     ..Default::default()
                 }),
-                0,
-                Some(vec![105, 106, 107, 108]),
+                vec![Dispatcher {
+                    dispatcher_id: 3,
+                    downstream_actor_id: (111..112).collect_vec(),
+                    ..Default::default()
+                }],
             ),
             make_mview_stream_actors_custom(
                 111,
@@ -1644,8 +1670,7 @@ mod tests {
                     table_id: table_id.table_id(),
                     ..Default::default()
                 }),
-                0,
-                Some(vec![109, 110]),
+                vec![],
             ),
         ];
 
