@@ -14,7 +14,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
-
+use async_recursion::async_recursion;
 use itertools::Itertools;
 use risingwave_common::bail;
 use risingwave_common::catalog::TableId;
@@ -24,7 +24,7 @@ use risingwave_pb::catalog::{Source, Table};
 use risingwave_pb::common::{ActorInfo, ParallelUnitMapping, WorkerNode, WorkerType};
 use risingwave_pb::meta::table_fragments::{ActorState, ActorStatus};
 use risingwave_pb::stream_plan::stream_node::NodeBody;
-use risingwave_pb::stream_plan::{ActorMapping, Dispatcher, DispatcherType, StreamNode, UpdateMutation};
+use risingwave_pb::stream_plan::{ActorMapping, Dispatcher, DispatcherType, StreamActor, StreamNode, UpdateMutation};
 use risingwave_pb::stream_service::{
     BroadcastActorInfoTableRequest, BuildActorsRequest, HangingChannel, UpdateActorsRequest,
 };
@@ -282,6 +282,39 @@ impl<S> GlobalStreamManager<S>
         Ok(())
     }
 
+    #[async_recursion]
+    async fn resolve_migrate_dependent_actors(&self,
+                                              table_ids: HashSet<TableId>,
+                                              actor_map: &mut HashMap<ActorId, StreamActor>,
+                                              actor_id_to_worker_id: &mut HashMap<ActorId, WorkerId>,
+                                              actors: &mut HashMap<TableId, HashMap<ActorId, WorkerId>>,
+                                              cache: &mut HashSet<TableId>) -> Result<()> {
+        for table_id in table_ids {
+            if cache.contains(&table_id) {
+                continue;
+            }
+
+            let table_fragments = self.fragment_manager.select_table_fragments_by_table_id(&table_id).await?;
+            actor_id_to_worker_id.extend(table_fragments.actor_to_node());
+
+            let table_actor_map = table_fragments.actor_map();
+
+            for (actor_id, actor) in table_actor_map {
+                actor_map.insert(actor_id, actor.clone());
+            }
+
+            let chain_actor_ids = table_fragments.chain_actor_ids();
+            if !chain_actor_ids.is_empty() {
+                let dependent_table_ids = table_fragments.dependent_table_ids();
+                self.resolve_migrate_dependent_actors(dependent_table_ids, actor_map, actor_id_to_worker_id, actors, cache).await?;
+            }
+
+            cache.insert(table_id);
+        }
+
+        Ok(())
+    }
+
     pub async fn migrate_actors(
         &self,
         actors: HashMap<TableId, HashMap<ActorId, WorkerId>>,
@@ -301,18 +334,12 @@ impl<S> GlobalStreamManager<S>
             bail!("no available compute node in the cluster");
         }
 
+        let mut actors = actors;
+
         let mut actor_id_to_worker_id = HashMap::new();
         let mut actor_map = HashMap::new();
-
-        for table_id in actors.keys() {
-            let table_fragments = self
-                .fragment_manager
-                .select_table_fragments_by_table_id(table_id)
-                .await?;
-
-            actor_id_to_worker_id.extend(table_fragments.actor_to_node());
-            actor_map.extend(table_fragments.actor_map());
-        }
+        let mut _cache = HashSet::new();
+        self.resolve_migrate_dependent_actors(actors.keys().cloned().collect(), &mut actor_map, &mut actor_id_to_worker_id, &mut actors, &mut _cache).await?;
 
         let mut actor_id_to_target_id = HashMap::new();
         let mut actor_id_to_table_id = HashMap::new();
@@ -336,43 +363,6 @@ impl<S> GlobalStreamManager<S>
 
         let mut downstream_actors = HashMap::new();
         let mut upstream_actors = HashMap::new();
-
-        // for (_table, table_actors) in &actors {
-        //     for actor_id in table_actors.keys() {
-        //         let stream_actor = actor_map.get(actor_id).unwrap();
-        //         for upstream_actor_id in &stream_actor.upstream_actor_id {
-        //             let upstream_actor = actor_map.get(upstream_actor_id).unwrap();
-        //
-        //             for dispatcher in &upstream_actor.dispatcher {
-        //                 println!("downstream id for {} is -> {:?}", actor_id, dispatcher.downstream_actor_id);
-        //
-        //                 for downstream_actor_id in &dispatcher.downstream_actor_id {
-        //                     downstream_actors
-        //                         .entry(*upstream_actor_id as ActorId)
-        //                         .or_insert(vec![])
-        //                         .push(*downstream_actor_id as ActorId);
-        //                     upstream_actors
-        //                         .entry(*downstream_actor_id as ActorId)
-        //                         .or_insert(vec![])
-        //                         .push((*upstream_actor_id as ActorId, dispatcher.dispatcher_id));
-        //                 }
-        //
-        //
-        //                 // for downstream_actor_id in &dispatcher.downstream_actor_id {
-        //                 //     downstream_actors
-        //                 //         .entry(*actor_id as ActorId)
-        //                 //         .or_insert(vec![])
-        //                 //         .push(*downstream_actor_id as ActorId);
-        //                 //     upstream_actors
-        //                 //         .entry(*downstream_actor_id as ActorId)
-        //                 //         .or_insert(vec![])
-        //                 //         .push((*table, dispatcher.dispatcher_id, *actor_id));
-        //                 // }
-        //             }
-        //         }
-        //     }
-        // }
-
         for (actor_id, stream_actor) in &actor_map {
             for dispatcher in &stream_actor.dispatcher {
                 for downstream_actor_id in &dispatcher.downstream_actor_id {
@@ -388,12 +378,7 @@ impl<S> GlobalStreamManager<S>
             }
         }
 
-        let mut actor_ids = BTreeSet::new();
-        for table_actors in actors.values() {
-            for actor_id in table_actors.keys() {
-                actor_ids.insert(*actor_id);
-            }
-        }
+        let actor_ids: BTreeSet<ActorId> = actors.values().flat_map(|value| value.keys().into_iter().cloned()).collect();
 
         let mut old_actor_id_to_new_actor_id = HashMap::new();
         let mut new_actor_id_to_old_actor_id = HashMap::new();
