@@ -285,7 +285,7 @@ impl<S> GlobalStreamManager<S>
     pub async fn migrate_actors(
         &self,
         actors: HashMap<TableId, HashMap<ActorId, WorkerId>>,
-    ) -> Result<()> {
+    ) -> Result<HashMap<ActorId, ActorId>> {
         let workers = self
             .cluster_manager
             .list_worker_node(
@@ -355,27 +355,23 @@ impl<S> GlobalStreamManager<S>
 
                 // todo: which is better?
                 // by `upstream_actor_id` or `dispatcher`
-                for &upstream_actor_id in &stream_actor.upstream_actor_id {
-                    upstream_actors.entry(*actor_id as ActorId).or_insert(vec![]).push(upstream_actor_id as ActorId);
-                    downstream_actors.entry(upstream_actor_id as ActorId).or_insert(vec![]).push((*table, *actor_id));
-                }
-
-                // for dispatcher in &stream_actor.dispatcher {
-                //     println!("actor {} downstreams {:?}", actor_id, dispatcher.downstream_actor_id);
-                //
-                //     println!("dispatcher {:?}", dispatcher.downstream_actor_id);
-                //
-                //     for downstream_actor_id in &dispatcher.downstream_actor_id {
-                //         downstream_actors
-                //             .entry(*actor_id as ActorId)
-                //             .or_insert(vec![])
-                //             .push(*downstream_actor_id as ActorId);
-                //         upstream_actors
-                //             .entry(*downstream_actor_id as ActorId)
-                //             .or_insert(vec![])
-                //             .push((*table, *actor_id));
-                //     }
+                // for &upstream_actor_id in &stream_actor.upstream_actor_id {
+                //     upstream_actors.entry(*actor_id as ActorId).or_insert(vec![]).push(upstream_actor_id as ActorId);
+                //     downstream_actors.entry(upstream_actor_id as ActorId).or_insert(vec![]).push((*table, *actor_id));
                 // }
+
+                for dispatcher in &stream_actor.dispatcher {
+                    for downstream_actor_id in &dispatcher.downstream_actor_id {
+                        downstream_actors
+                            .entry(*actor_id as ActorId)
+                            .or_insert(vec![])
+                            .push(*downstream_actor_id as ActorId);
+                        upstream_actors
+                            .entry(*downstream_actor_id as ActorId)
+                            .or_insert(vec![])
+                            .push((*table, dispatcher.dispatcher_id, *actor_id));
+                    }
+                }
             }
         }
 
@@ -388,7 +384,6 @@ impl<S> GlobalStreamManager<S>
                 actor_ids.insert(*actor_id);
             }
         }
-
 
         let mut old_actor_id_to_new_actor_id = HashMap::new();
         let mut new_actor_id_to_old_actor_id = HashMap::new();
@@ -430,7 +425,7 @@ impl<S> GlobalStreamManager<S>
                 let worker_id = actor_id_to_target_id.get(actor_id).unwrap();
                 let worker = workers.get(worker_id).unwrap();
 
-                for upstream_actor_id in upstream_actor_ids {
+                for (_, _, upstream_actor_id) in upstream_actor_ids {
                     if actor_ids.contains(upstream_actor_id) {
                         continue;
                     }
@@ -537,43 +532,38 @@ impl<S> GlobalStreamManager<S>
 
         for actor_id in &actor_ids {
             if let Some(upstream_actor_ids) = upstream_actors.get(actor_id) {
-                for upstream_actor_id in upstream_actor_ids {
+                for (_, upstream_dispatcher_id, upstream_actor_id) in upstream_actor_ids {
                     if actor_ids.contains(upstream_actor_id) {
                         continue;
                     }
 
-                    actor_dispatcher_update.insert(*upstream_actor_id, DispatcherUpdate {
-                        dispatcher_id: 0,
-                        hash_mapping: None,
+                    let new_actor_id = old_actor_id_to_new_actor_id.get(actor_id).unwrap();
+
+                    // todo, chain node
+                    let upstream_actor = actor_map.get(upstream_actor_id).unwrap();
+
+                    let dispatcher = upstream_actor.dispatcher.iter().find(|&dispatcher| {
+                        dispatcher.dispatcher_id == *upstream_dispatcher_id
+                    }).unwrap();
+
+                    let dispatcher_update = actor_dispatcher_update.entry(*upstream_actor_id).or_insert(DispatcherUpdate {
+                        dispatcher_id: dispatcher.dispatcher_id,
+                        hash_mapping: dispatcher.hash_mapping.clone(),
                         added_downstream_actor_id: vec![],
                         removed_downstream_actor_id: vec![],
                     });
+
+                    dispatcher_update.added_downstream_actor_id.push(*new_actor_id);
+                    dispatcher_update.removed_downstream_actor_id.push(*actor_id);
                 }
             }
         }
 
         self.barrier_manager.run_command(Command::Plain(Some(Mutation::Update(UpdateMutation {
             actor_dispatcher_update,
-        }))));
+        })))).await?;
 
-        // //
-        // if let Err(err) = self
-        //     .barrier_manager
-        //     .run_command(Command::CreateMaterializedView {
-        //         table_fragments,
-        //         table_sink_map: table_sink_map.clone(),
-        //         dispatchers: dispatchers.clone(),
-        //         source_state: init_split_assignment.clone(),
-        //     })
-        //     .await
-        // {
-        //     self.fragment_manager
-        //         .cancel_create_table_fragments(&table_id)
-        //         .await?;
-        //     return Err(err);
-        // }
-
-        todo!()
+        Ok(old_actor_id_to_new_actor_id)
     }
 
     /// Create materialized view, it works as follows:
