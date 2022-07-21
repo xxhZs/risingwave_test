@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use std::sync::Arc;
+use itertools::Itertools;
 
 use madsim::collections::HashMap;
 use parking_lot::{Mutex, MutexGuard, RwLock};
@@ -150,6 +151,9 @@ impl SharedContext {
 
     #[inline]
     pub fn add_channel_pairs(&self, ids: UpDownActorIds, channels: ConsumableChannelPair) {
+        for (a, b) in self.lock_channel_map().iter() {
+            println!("chan {:?} {:?}", a, b);
+        }
         assert!(
             self.lock_channel_map().insert(ids, channels).is_none(),
             "channel already exists: {:?}",
@@ -158,8 +162,8 @@ impl SharedContext {
     }
 
     pub fn retain<F>(&self, mut f: F)
-    where
-        F: FnMut(&(u32, u32)) -> bool,
+        where
+            F: FnMut(&(u32, u32)) -> bool,
     {
         self.lock_channel_map()
             .retain(|up_down_ids, _| f(up_down_ids));

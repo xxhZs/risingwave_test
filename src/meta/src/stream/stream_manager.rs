@@ -457,6 +457,14 @@ impl<S> GlobalStreamManager<S>
             }
         }
 
+        for (worker_id, x) in &node_hanging_channels {
+            println!("for worker {}", worker_id);
+
+            for xx in x {
+                println!("\thanging chan {:?} -> {:?}", xx.upstream, xx.downstream);
+            }
+        }
+
         let mut actor_infos_to_broadcast = vec![];
         let mut node_actors: HashMap<WorkerId, Vec<_>> = HashMap::new();
         for (actor_id, &worker_id) in &actor_id_to_target_id {
@@ -475,24 +483,35 @@ impl<S> GlobalStreamManager<S>
 
             let client = self.client_pool.get(node).await?;
 
-            client
-                .to_owned()
-                .broadcast_actor_info_table(BroadcastActorInfoTableRequest {
-                    info: actor_infos_to_broadcast.clone(),
-                })
-                .await?;
+            // client
+            //     .to_owned()
+            //     .broadcast_actor_info_table(BroadcastActorInfoTableRequest {
+            //         info: actor_infos_to_broadcast.clone(),
+            //     })
+            //     .await?;
 
             let request_id = Uuid::new_v4().to_string();
             tracing::debug!(request_id = request_id.as_str(), actors = ?actors, "update actors");
+            let request = UpdateActorsRequest {
+                request_id,
+                actors: stream_actors.clone(),
+                hanging_channels: node_hanging_channels.remove(node_id).unwrap_or_default(),
+            };
+
+            println!("remain for worker {}", node_id);
+            for xx in &request.hanging_channels {
+                    println!("\tremain hanging chan {:?} -> {:?}", xx.upstream, xx.downstream);
+
+            }
+
+
             client
                 .to_owned()
-                .update_actors(UpdateActorsRequest {
-                    request_id,
-                    actors: stream_actors.clone(),
-                    hanging_channels: node_hanging_channels.remove(node_id).unwrap_or_default(),
-                })
+                .update_actors(request)
                 .await?;
         }
+
+
 
         // Build remaining hanging channels on compute nodes.
         for (node_id, hanging_channels) in node_hanging_channels {
@@ -560,6 +579,14 @@ impl<S> GlobalStreamManager<S>
                     dispatcher_update.removed_downstream_actor_id.push(*actor_id);
                 }
             }
+        }
+
+        for (actor_id, x) in &actor_dispatcher_update {
+            println!("actor_id {}", actor_id);
+
+            println!("\tdispatcher {}", x.dispatcher_id);
+            println!("\tadd {:?}", x.added_downstream_actor_id);
+            println!("\trem {:?}", x.removed_downstream_actor_id);
         }
 
         self.barrier_manager.run_command(Command::Plain(Some(Mutation::Update(UpdateMutation {
