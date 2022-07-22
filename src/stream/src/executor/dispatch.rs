@@ -264,13 +264,16 @@ impl DispatchExecutorInner {
         #[expect(clippy::single_match)]
         match dispatcher {
             DispatcherImpl::Hash(dispatcher) => {
-                dispatcher.hash_mapping = {
+                let vec = {
                     let compressed_mapping = update.get_hash_mapping()?;
                     decompress_data(
                         &compressed_mapping.original_indices,
                         &compressed_mapping.data,
                     )
-                }
+                };
+
+                println!("after remove {:?}", vec);
+                dispatcher.hash_mapping = vec
             }
             _ => {}
         }
