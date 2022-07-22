@@ -15,6 +15,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use async_recursion::async_recursion;
+use futures::TryFutureExt;
 use itertools::Itertools;
 use risingwave_common::bail;
 use risingwave_common::catalog::TableId;
@@ -529,7 +530,6 @@ impl<S> GlobalStreamManager<S>
         }
 
 
-
         // Build remaining hanging channels on compute nodes.
         for (node_id, hanging_channels) in node_hanging_channels {
             let node = worker_nodes.get(&node_id).unwrap();
@@ -568,6 +568,87 @@ impl<S> GlobalStreamManager<S>
                 .await?;
         }
 
+        // Record vnode to parallel unit mapping for actors.
+        // let actor_to_vnode_mapping = {
+        //     let mut mapping = HashMap::new();
+        //     for fragment in table_fragments.fragments.values() {
+        //         for actor in &fragment.actors {
+        //             mapping
+        //                 .try_insert(actor.actor_id, fragment.vnode_mapping.clone())
+        //                 .unwrap();
+        //         }
+        //     }
+        //     mapping
+        // };
+
+        // // Fill hash dispatcher's mapping with scheduled locations.
+        // for fragment in table_fragments.fragments.values_mut() {
+        //     // Filter out hash dispatchers in this fragment.
+        //     let dispatchers = fragment
+        //         .actors
+        //         .iter_mut()
+        //         .flat_map(|actor| actor.dispatcher.iter_mut())
+        //         .filter(|d| d.get_type().unwrap() == DispatcherType::Hash);
+        //
+        //     for dispatcher in dispatchers {
+        //         match dispatcher.downstream_actor_id.as_slice() {
+        //             [] => panic!("hash dispatcher should have at least one downstream actor"),
+        //
+        //             // There exists some unoptimized situation where a hash dispatcher has ONLY ONE
+        //             // downstream actor, which makes it behave like a simple dispatcher. As a
+        //             // workaround, we specially compute the consistent hash mapping here.
+        //             // This arm could be removed after the optimizer has been fully implemented.
+        //             &[single_downstream_actor] => {
+        //                 dispatcher.hash_mapping = Some(ActorMapping {
+        //                     original_indices: vec![VIRTUAL_NODE_COUNT as u64 - 1],
+        //                     data: vec![single_downstream_actor],
+        //                 });
+        //             }
+        //
+        //             // For normal cases, we can simply transform the mapping from downstream actors
+        //             // to current hash dispatchers.
+        //             downstream_actors @ &[first_downstream_actor, ..] => {
+        //                 // All actors in the downstream fragment should have the same parallel unit
+        //                 // mapping, find it with the first downstream actor.
+        //                 let downstream_vnode_mapping = actor_to_vnode_mapping
+        //                     .get(&first_downstream_actor)
+        //                     .unwrap()
+        //                     .as_ref()
+        //                     .unwrap_or_else(|| {
+        //                         panic!("no vnode mapping for actor {}", &first_downstream_actor);
+        //                     });
+        //
+        //                 // Mapping from the parallel unit to downstream actors.
+        //                 let parallel_unit_actor_map = downstream_actors
+        //                     .iter()
+        //                     .map(|actor_id| {
+        //                         (
+        //                             locations.actor_locations.get(actor_id).unwrap().id,
+        //                             *actor_id,
+        //                         )
+        //                     })
+        //                     .collect::<HashMap<_, _>>();
+        //
+        //                 // Trasform the mapping of parallel unit to the mapping of actor.
+        //                 let ParallelUnitMapping {
+        //                     original_indices,
+        //                     data,
+        //                     ..
+        //                 } = downstream_vnode_mapping;
+        //                 let data = data
+        //                     .iter()
+        //                     .map(|parallel_unit_id| parallel_unit_actor_map[parallel_unit_id])
+        //                     .collect_vec();
+        //                 dispatcher.hash_mapping = Some(ActorMapping {
+        //                     original_indices: original_indices.clone(),
+        //                     data,
+        //                 });
+        //             }
+        //         }
+        //     }
+        // }
+
+
         let mut actor_dispatcher_update = HashMap::new();
         for actor_id in &actor_ids {
             if let Some(upstream_actor_ids) = upstream_actors.get(actor_id) {
@@ -589,6 +670,118 @@ impl<S> GlobalStreamManager<S>
                     let dispatcher = upstream_actor.dispatcher.iter().find(|&dispatcher| {
                         dispatcher.dispatcher_id == *upstream_dispatcher_id
                     }).unwrap();
+
+
+                    let mut new_hash_mapping = dispatcher.hash_mapping.clone();
+
+                    if dispatcher.get_type().unwrap() == DispatcherType::Hash {
+                        new_hash_mapping = match dispatcher.downstream_actor_id.as_slice() {
+                            [] => panic!("hash dispatcher should have at least one downstream actor"),
+
+                            &[single_downstream_actor] => {
+                                Some(ActorMapping {
+                                    original_indices: vec![VIRTUAL_NODE_COUNT as u64 - 1],
+                                    data: vec![single_downstream_actor],
+                                })
+                            }
+
+                            _ => unimplemented!(),
+                            // // For normal cases, we can simply transform the mapping from downstream actors
+                            // // to current hash dispatchers.
+                            // downstream_actors @ &[first_downstream_actor, ..] => {
+                            //     // All actors in the downstream fragment should have the same parallel unit
+                            //     // mapping, find it with the first downstream actor.
+                            //     let downstream_vnode_mapping = actor_to_vnode_mapping
+                            //         .get(&first_downstream_actor)
+                            //         .unwrap()
+                            //         .as_ref()
+                            //         .unwrap_or_else(|| {
+                            //             panic!("no vnode mapping for actor {}", &first_downstream_actor);
+                            //         });
+                            //
+                            //     // Mapping from the parallel unit to downstream actors.
+                            //     let parallel_unit_actor_map = downstream_actors
+                            //         .iter()
+                            //         .map(|actor_id| {
+                            //             (
+                            //                 locations.actor_locations.get(actor_id).unwrap().id,
+                            //                 *actor_id,
+                            //             )
+                            //         })
+                            //         .collect::<HashMap<_, _>>();
+                            //
+                            //     // Trasform the mapping of parallel unit to the mapping of actor.
+                            //     let ParallelUnitMapping {
+                            //         original_indices,
+                            //         data,
+                            //         ..
+                            //     } = downstream_vnode_mapping;
+                            //     let data = data
+                            //         .iter()
+                            //         .map(|parallel_unit_id| parallel_unit_actor_map[parallel_unit_id])
+                            //         .collect_vec();
+                            //     dispatcher.hash_mapping = Some(ActorMapping {
+                            //         original_indices: original_indices.clone(),
+                            //         data,
+                            //     });
+                            // }
+                        }
+                    }
+
+                    //   match dispatcher.downstream_actor_id.as_slice() {
+                    //                     [] => panic!("hash dispatcher should have at least one downstream actor"),
+                    //
+                    //                     // There exists some unoptimized situation where a hash dispatcher has ONLY ONE
+                    //                     // downstream actor, which makes it behave like a simple dispatcher. As a
+                    //                     // workaround, we specially compute the consistent hash mapping here.
+                    //                     // This arm could be removed after the optimizer has been fully implemented.
+                    //                     &[single_downstream_actor] => {
+                    //                         dispatcher.hash_mapping = Some(ActorMapping {
+                    //                             original_indices: vec![VIRTUAL_NODE_COUNT as u64 - 1],
+                    //                             data: vec![single_downstream_actor],
+                    //                         });
+                    //                     }
+                    //
+                    //                     // For normal cases, we can simply transform the mapping from downstream actors
+                    //                     // to current hash dispatchers.
+                    //                     downstream_actors @ &[first_downstream_actor, ..] => {
+                    //                         // All actors in the downstream fragment should have the same parallel unit
+                    //                         // mapping, find it with the first downstream actor.
+                    //                         let downstream_vnode_mapping = actor_to_vnode_mapping
+                    //                             .get(&first_downstream_actor)
+                    //                             .unwrap()
+                    //                             .as_ref()
+                    //                             .unwrap_or_else(|| {
+                    //                                 panic!("no vnode mapping for actor {}", &first_downstream_actor);
+                    //                             });
+                    //
+                    //                         // Mapping from the parallel unit to downstream actors.
+                    //                         let parallel_unit_actor_map = downstream_actors
+                    //                             .iter()
+                    //                             .map(|actor_id| {
+                    //                                 (
+                    //                                     locations.actor_locations.get(actor_id).unwrap().id,
+                    //                                     *actor_id,
+                    //                                 )
+                    //                             })
+                    //                             .collect::<HashMap<_, _>>();
+                    //
+                    //                         // Trasform the mapping of parallel unit to the mapping of actor.
+                    //                         let ParallelUnitMapping {
+                    //                             original_indices,
+                    //                             data,
+                    //                             ..
+                    //                         } = downstream_vnode_mapping;
+                    //                         let data = data
+                    //                             .iter()
+                    //                             .map(|parallel_unit_id| parallel_unit_actor_map[parallel_unit_id])
+                    //                             .collect_vec();
+                    //                         dispatcher.hash_mapping = Some(ActorMapping {
+                    //                             original_indices: original_indices.clone(),
+                    //                             data,
+                    //                         });
+                    //                     }
+                    //                 }
 
                     let dispatcher_update = actor_dispatcher_update.entry(*upstream_actor_id).or_insert(DispatcherUpdate {
                         dispatcher_id: dispatcher.dispatcher_id,
