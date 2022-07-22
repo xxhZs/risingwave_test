@@ -246,6 +246,8 @@ impl DispatchExecutorInner {
             .try_collect()?;
 
         let dispatcher = self.find_dispatcher(update.dispatcher_id);
+        println!("found dispatcher {:?}", dispatcher);
+
         dispatcher.add_outputs(outputs);
 
         Ok(())
@@ -289,6 +291,9 @@ impl DispatchExecutorInner {
                 }
             }
             Mutation::Update(updates) => {
+                for (x, y) in updates {
+                    println!("update actor {}, update {:?} {:?}", x, y.added_downstream_actor_id, y.removed_downstream_actor_id);
+                }
                 if let Some(update) = updates.get(&self.actor_id) {
                     self.pre_update_dispatcher(update)?;
                 }
@@ -997,6 +1002,7 @@ mod tests {
 
     fn add_local_channels(ctx: Arc<SharedContext>, up_down_ids: Vec<(u32, u32)>) {
         for up_down_id in up_down_ids {
+            println!("add local up {} to down {}", up_down_id.0, up_down_id.1);
             let (tx, rx) = channel(LOCAL_OUTPUT_CHANNEL_SIZE);
             ctx.add_channel_pairs(up_down_id, (Some(tx), Some(rx)));
         }
@@ -1004,6 +1010,7 @@ mod tests {
 
     fn add_remote_channels(ctx: Arc<SharedContext>, up_id: u32, down_ids: Vec<u32>) {
         for down_id in down_ids {
+            println!("add remote up {} to down {}", up_id, down_id);
             let (tx, rx) = channel(LOCAL_OUTPUT_CHANNEL_SIZE);
             ctx.add_channel_pairs((up_id, down_id), (Some(tx), Some(rx)));
         }

@@ -423,12 +423,18 @@ impl<S> GlobalStreamManager<S>
             new_actor_map.insert(*actor_id as ActorId, new_actor);
         }
 
+        for (a, b) in &upstream_actors {
+            println!("actor {} upstream {:?}", a, b);
+        }
+
         let mut node_hanging_channels: HashMap<WorkerId, Vec<HangingChannel>> = HashMap::new();
 
         for actor_id in &actor_ids {
             if let Some(upstream_actor_ids) = upstream_actors.get(actor_id) {
                 let worker_id = actor_id_to_target_id.get(actor_id).unwrap();
                 let worker = worker_nodes.get(worker_id).unwrap();
+
+                println!("actor {} to {:?}", actor_id, worker.host.as_ref().unwrap());
 
                 for (upstream_actor_id, _upstream_dispatcher_id) in upstream_actor_ids {
                     if actor_ids.contains(upstream_actor_id) {
@@ -441,6 +447,12 @@ impl<S> GlobalStreamManager<S>
 
                     // note: must exists
                     let upstream_worker_id = actor_id_to_worker_id.get(upstream_actor_id).unwrap();
+
+                    // note: we will create local channel later
+                    if worker_id == upstream_worker_id {
+                        continue;
+                    }
+
 
                     node_hanging_channels.entry(*upstream_worker_id).or_default()
                         .push(HangingChannel {
@@ -481,14 +493,20 @@ impl<S> GlobalStreamManager<S>
         for (node_id, stream_actors) in &node_actors {
             let node = worker_nodes.get(node_id).unwrap();
 
+
+            println!("for node {}", node_id);
+            for actor in stream_actors {
+                println!("\tactor {}", actor.actor_id);
+            }
+
             let client = self.client_pool.get(node).await?;
 
-            // client
-            //     .to_owned()
-            //     .broadcast_actor_info_table(BroadcastActorInfoTableRequest {
-            //         info: actor_infos_to_broadcast.clone(),
-            //     })
-            //     .await?;
+            client
+                .to_owned()
+                .broadcast_actor_info_table(BroadcastActorInfoTableRequest {
+                    info: actor_infos_to_broadcast.clone(),
+                })
+                .await?;
 
             let request_id = Uuid::new_v4().to_string();
             tracing::debug!(request_id = request_id.as_str(), actors = ?actors, "update actors");
@@ -498,11 +516,10 @@ impl<S> GlobalStreamManager<S>
                 hanging_channels: node_hanging_channels.remove(node_id).unwrap_or_default(),
             };
 
-            println!("remain for worker {}", node_id);
-            for xx in &request.hanging_channels {
-                    println!("\tremain hanging chan {:?} -> {:?}", xx.upstream, xx.downstream);
-
-            }
+            // println!("remain for worker {}", node_id);
+            // for xx in &request.hanging_channels {
+            //     println!("\tremain hanging chan {:?} -> {:?}", xx.upstream, xx.downstream);
+            // }
 
 
             client
@@ -563,6 +580,11 @@ impl<S> GlobalStreamManager<S>
 
                     // todo, chain node
                     let upstream_actor = actor_map.get(upstream_actor_id).unwrap();
+
+                    for x in upstream_actor.dispatcher.iter() {
+                        println!("dispatcher {}", x.dispatcher_id);
+                        println!("\tdispatcher down {:?}", x.downstream_actor_id);
+                    }
 
                     let dispatcher = upstream_actor.dispatcher.iter().find(|&dispatcher| {
                         dispatcher.dispatcher_id == *upstream_dispatcher_id

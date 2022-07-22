@@ -341,6 +341,7 @@ fn update_upstreams(context: &SharedContext, ids: &[UpDownActorIds]) {
     ids.iter()
         .map(|id| {
             let (tx, rx) = channel(LOCAL_OUTPUT_CHANNEL_SIZE);
+            println!("add 3 {:?}", id);
             context.add_channel_pairs(*id, (Some(tx), Some(rx)));
         })
         .count();
@@ -764,6 +765,11 @@ impl LocalStreamManagerCore {
         }
 
         for actor in actors {
+            println!("for actor {}", actor.actor_id);
+            println!("actor {} ups {:?}", actor.actor_id, actor.upstream_actor_id);
+            println!("actor {} downs {:?}", actor.actor_id, actor.dispatcher.iter().map(|dispatcher| {
+                dispatcher.clone().downstream_actor_id
+            }).collect_vec()) ;
             // At this time, the graph might not be complete, so we do not check if downstream
             // has `current_id` as upstream.
             let down_id = actor
@@ -772,15 +778,19 @@ impl LocalStreamManagerCore {
                 .flat_map(|x| x.downstream_actor_id.iter())
                 .map(|id| (actor.actor_id, *id))
                 .collect_vec();
+
+            println!("down id {:?}", down_id);
             update_upstreams(&self.context, &down_id);
 
             // Add remote input channels.
             let mut up_id = vec![];
+
             for upstream_id in actor.get_upstream_actor_id() {
                 if !local_actor_ids.contains(upstream_id) {
                     up_id.push((*upstream_id, actor.actor_id));
                 }
             }
+            println!("up id {:?}", up_id);
             update_upstreams(&self.context, &up_id);
         }
 
@@ -795,6 +805,7 @@ impl LocalStreamManagerCore {
                 ) => {
                     let up_down_ids = (up.actor_id, *down_id);
                     let (tx, rx) = channel(LOCAL_OUTPUT_CHANNEL_SIZE);
+                    println!("add 1 up {} to down {}", up_down_ids.0, up_down_ids.1);
                     self.context
                         .add_channel_pairs(up_down_ids, (Some(tx), Some(rx)));
                 }
@@ -807,6 +818,7 @@ impl LocalStreamManagerCore {
                 ) => {
                     let up_down_ids = (*up_id, down.actor_id);
                     let (tx, rx) = channel(LOCAL_OUTPUT_CHANNEL_SIZE);
+                    println!("add 2 up {} to down {}", up_down_ids.0, up_down_ids.1);
                     self.context
                         .add_channel_pairs(up_down_ids, (Some(tx), Some(rx)));
                 }

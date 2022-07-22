@@ -151,9 +151,11 @@ impl SharedContext {
 
     #[inline]
     pub fn add_channel_pairs(&self, ids: UpDownActorIds, channels: ConsumableChannelPair) {
-        for (a, b) in self.lock_channel_map().iter() {
-            println!("chan {:?} {:?}", a, b);
-        }
+        // for (a, b) in self.lock_channel_map().iter() {
+        //     println!("chan {:?} {:?}", a, b);
+        // }
+
+        println!("chan {:?} to {:?}", ids, channels);
         assert!(
             self.lock_channel_map().insert(ids, channels).is_none(),
             "channel already exists: {:?}",
