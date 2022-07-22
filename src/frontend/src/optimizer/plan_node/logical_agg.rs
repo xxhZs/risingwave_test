@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fmt;
 
 use fixedbitset::FixedBitSet;
@@ -297,23 +297,26 @@ pub struct LogicalAgg {
 }
 
 impl LogicalAgg {
-    pub fn infer_internal_table_catalog(&self) -> (Vec<TableCatalog>, HashMap<usize, i32>) {
+    pub fn infer_internal_table_catalog(&self) -> (Vec<TableCatalog>, HashMap<usize, usize>) {
         let mut table_catalogs = vec![];
+        let mut column_mapping = HashMap::new();
         let out_fields = self.base.schema.fields();
         let in_fields = self.input().schema().fields().to_vec();
         let in_pks = self.input().pk_indices().to_vec();
         let in_append_only = self.input.append_only();
         let in_dist_key = self.input().distribution().dist_column_indices().to_vec();
-        let get_sorted_input_state_table =
+        let mut get_sorted_input_state_table =
             |sort_keys: Vec<(OrderType, usize)>, include_keys: Vec<usize>| -> TableCatalog {
                 let mut internal_table_catalog_builder = TableCatalogBuilder::new();
                 for &idx in &self.group_key {
                     let tb_column_idx = internal_table_catalog_builder.add_column(&in_fields[idx]);
+                    column_mapping.insert(idx, tb_column_idx);
                     internal_table_catalog_builder
                         .add_order_column(tb_column_idx, OrderType::Ascending);
                 }
                 for (order_type, idx) in sort_keys {
                     let tb_column_idx = internal_table_catalog_builder.add_column(&in_fields[idx]);
+                    column_mapping.insert(idx, tb_column_idx);
                     internal_table_catalog_builder.add_order_column(tb_column_idx, order_type);
                 }
 
@@ -321,12 +324,15 @@ impl LogicalAgg {
                 for pk_index in &in_pks {
                     let tb_column_idx =
                         internal_table_catalog_builder.add_column(&in_fields[*pk_index]);
+                    column_mapping.insert(*pk_index, tb_column_idx);
                     internal_table_catalog_builder
                         .add_order_column(tb_column_idx, OrderType::Ascending);
                 }
 
                 for inclued_key in include_keys {
-                    internal_table_catalog_builder.add_column(&in_fields[inclued_key]);
+                    let tb_column_idx =
+                        internal_table_catalog_builder.add_column(&in_fields[inclued_key]);
+                    column_mapping.insert(inclued_key, tb_column_idx);
                 }
                 internal_table_catalog_builder.build(in_dist_key.clone(), in_append_only)
             };
@@ -345,6 +351,7 @@ impl LogicalAgg {
             let state_table = match agg_call.agg_kind {
                 AggKind::Min | AggKind::Max | AggKind::StringAgg => {
                     if !in_append_only {
+                        let mut sort_column_set = BTreeSet::new();
                         let sort_keys = {
                             match agg_call.agg_kind {
                                 AggKind::Min => {
@@ -353,19 +360,26 @@ impl LogicalAgg {
                                 AggKind::Max => {
                                     vec![(OrderType::Descending, agg_call.inputs[0].index)]
                                 }
-                                AggKind::StringAgg => {
-                                    // TODO(rc): order by clause
-                                    vec![]
-                                }
+                                AggKind::StringAgg => agg_call
+                                    .order_by_fields
+                                    .iter()
+                                    .map(|o| {
+                                        let col_idx = o.input.index;
+                                        sort_column_set.insert(col_idx);
+                                        (o.direction.to_order(), col_idx)
+                                    })
+                                    .collect(),
                                 _ => unreachable!(),
                             }
                         };
 
                         let include_keys = match agg_call.agg_kind {
-                            // TODO(rc): is this needed?
-                            AggKind::StringAgg => {
-                                vec![agg_call.inputs[0].index]
-                            }
+                            AggKind::StringAgg => agg_call
+                                .inputs
+                                .iter()
+                                .map(|i| i.index)
+                                .filter(|i| !sort_column_set.contains(i))
+                                .collect(),
                             _ => vec![],
                         };
 
@@ -384,8 +398,7 @@ impl LogicalAgg {
             };
             table_catalogs.push(state_table);
         }
-        // TODO: fill column mapping later (#3485).
-        (table_catalogs, HashMap::new())
+        (table_catalogs, column_mapping)
     }
 
     /// Two phase streaming agg.
